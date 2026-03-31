@@ -73,6 +73,30 @@ When eviction targets tokens with small attention mass ($A_{\mathcal{E}} \ll 1$)
 \end{equation}
 \end{theorem}
 
+\paragraph{Empirical validation: KV quantization errors are additive.}
+Theorem~\ref{thm:joint} predicts that K and V quantization errors combine approximately additively when attention mass is concentrated. We verify this directly on Llama-3.1-8B (4K context, 50\% StreamingLLM eviction):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrl}
+\toprule
+\textbf{Config} & \textbf{PPL $\Delta$\%} & \\
+\midrule
+K=q4\_0, V=FP16 & +2.80\% & $\delta_K$ \\
+K=FP16, V=q4\_0 & +0.33\% & $\delta_V$ \\
+\midrule
+$\delta_K + \delta_V$ (predicted) & +3.13\% & additive model \\
+K=q4\_0, V=q4\_0 (measured) & +3.14\% & actual \\
+\midrule
+\textbf{Prediction error} & \textbf{0.01\%} & \\
+\bottomrule
+\end{tabular}
+\caption{Empirical validation of error additivity. The PPL degradation from joint K+V quantization equals the sum of individual contributions within 0.01\% error, confirming that cross-terms in Theorem~\ref{thm:joint} are negligible.}
+\label{tab:additivity}
+\end{table}
+
+\noindent This additivity has a practical implication: the quality impact of any asymmetric (K, V) configuration can be \emph{predicted} from just two measurements ($\delta_K$ and $\delta_V$), avoiding the need to test all $O(n^2)$ combinations. For $n$ quantization types, this reduces calibration cost from $n^2$ to $2n$.
+
 \subsection{Threshold Derivation}
 \label{sec:threshold-derivation}
 
