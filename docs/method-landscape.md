@@ -26,7 +26,7 @@
 | **Transform Coding** | | | | | | | | |
 | KVTC | ICLR 2026 (arxiv 2511.01815) | PCA + adaptive quant + entropy | 20-40x | <1 pt benchmark | **Storage** | Yes (10min calib) | ? | NVIDIA. Compress-store-decompress. NOT runtime memory. |
 | **Hybrid / Advanced** | | | | | | | | |
-| RocketKV | ICML 2025 | ? | **400x claimed** | ? | ? | ? | ? | NVIDIA. Under investigation. |
+| RocketKV | ICML 2025 | Token selection (2-stage: coarse→fine) | **~1.5x actual** (32.6% mem saved) | NIAH 100% @256 budget | Runtime | Yes | ? | NVIDIA. "400x" is title vs full cache, actual mem saving modest. Supports PPL-task gap. |
 | DeltaKV | Feb 2026 | Cross-token residual | 3.4x | ? | Runtime? | Yes | ? | Token-level delta encoding |
 | CLA/LCKV | 2024-2025 | Cross-layer sharing | ~2x | minimal | Runtime | **No (retrain)** | Yes | Requires architecture modification |
 | MiniCache | 2024 | KV cache merging | ~2x | <1% | Runtime | Yes | Yes | Token merging in KV space |
