@@ -214,51 +214,74 @@ This means 5-10x eviction is achievable with <5% evicted attention mass, keeping
 
 ## 6. Attention-Weight-Based Unified Decision Framework
 
-### 6.1 Three-Tier Token Classification
+### 6.1 Four-Tier Token Classification
+
+> **Update (2026-03-31):** Revised from three-tier to four-tier after H-001 refutation. Pure eviction is too aggressive — PPL's geometric mean amplifies even small information loss catastrophically. The fourth tier (V=2-bit degradation) replaces hard eviction for most "low attention" tokens, reserving true eviction only for tokens with negligible attention mass.
 
 Combining Theorems 1-4, every token's optimal treatment is determined by its attention weight $a_j$:
 
-| Tier | Condition | Treatment | Per-token cost |
-|------|-----------|-----------|----------------|
-| **High** | $a_j > \tau_{\text{high}}$ | Retain, V = $b_V^{\text{hi}}$ bits (6-bit) | $b_K + b_V^{\text{hi}}$ |
-| **Medium** | $\tau_{\text{low}} < a_j \leq \tau_{\text{high}}$ | Retain, V = $b_V^{\text{lo}}$ bits (4-bit) | $b_K + b_V^{\text{lo}}$ |
-| **Low** | $a_j \leq \tau_{\text{low}}$ | Evict | 0 |
+| Tier | Condition | Treatment | Per-token cost | Role |
+|------|-----------|-----------|----------------|------|
+| **Critical** | $a_j > \tau_3$ | Retain, V = 6-bit | $b_K + 6 = 12$ | Semantic anchors, high-attention tokens |
+| **Standard** | $\tau_2 < a_j \leq \tau_3$ | Retain, V = 4-bit | $b_K + 4 = 10$ | Normal context tokens |
+| **Degraded** | $\tau_1 < a_j \leq \tau_2$ | Retain K, V = 2-bit | $b_K + 2 = 8$ | Low-attention but not negligible |
+| **Evict** | $a_j \leq \tau_1$ | Discard entirely | 0 | Truly negligible (attention < noise floor) |
+
+**Key change from v1:** The "Low" tier is no longer eviction — it's 2-bit V degradation. This preserves directional information in V (the token can still contribute to output, albeit noisily) while achieving almost the same memory savings as eviction (8 bits vs 0, compared to 10-12 for higher tiers).
+
+**V=2-bit concern (from H-000):** Uniform V=2-bit gave +48% PPL. But that was applied to ALL tokens. In the four-tier scheme, V=2-bit is only applied to low-attention tokens (where $a_j$ is small). The error contribution of a low-attention token with 2-bit V is:
+$$a_j \cdot \|v_j - \hat{v}_j^{2\text{bit}}\| \leq a_j \cdot \sigma_V\sqrt{d \cdot c_2}$$
+
+For $a_j < \tau_2$ (small), this product is bounded regardless of how large $c_2$ is. The V=2-bit cliff only causes problems when applied to high-attention tokens.
 
 ### 6.2 Threshold Derivation
 
-**$\tau_{\text{low}}$ (eviction threshold):** From Theorem 2:
-$$\tau_{\text{low}} = \alpha \cdot \sqrt{\frac{c_{b_V^{\text{lo}}} \kappa}{d} + \frac{c_{b_K} \sigma_Q^2 \sigma_K^2}{T^2 d}}$$
+Three thresholds $\tau_1 < \tau_2 < \tau_3$ partition the attention weight space.
 
-**$\tau_{\text{high}}$ (precision upgrade threshold):** The token's V error difference between low and high precision must exceed a significance threshold:
-$$a_j \cdot \sigma_V\sqrt{d} \cdot (\sqrt{c_{b_V^{\text{lo}}}} - \sqrt{c_{b_V^{\text{hi}}}}) > \beta \cdot \sigma_{\text{floor}}$$
+**$\tau_1$ (eviction threshold):** From Theorem 2, a token is truly negligible when its contribution (even with perfect V) is below the quantization noise floor:
+$$\tau_1 = \alpha_1 \cdot \frac{\sigma_{\text{floor}}}{\sigma_V \sqrt{d}}$$
 
-Solving:
-$$\tau_{\text{high}} = \beta \cdot \frac{\sigma_{\text{floor}}}{\sigma_V\sqrt{d} \cdot (\sqrt{c_{b_V^{\text{lo}}}} - \sqrt{c_{b_V^{\text{hi}}}})}$$
+In practice, $\tau_1$ should be very small — only tokens with $a_j < 0.1\%$ of total attention.
 
-For $b_V^{\text{lo}} = 4$, $b_V^{\text{hi}} = 6$: $\sqrt{c_4} - \sqrt{c_6} = 0.189 - 0.081 = 0.108$
+**$\tau_2$ (degradation threshold):** A token can tolerate V=2-bit when the error difference between V=4-bit and V=2-bit, weighted by attention, is within the noise floor:
+$$a_j \cdot \sigma_V\sqrt{d} \cdot (\sqrt{c_2} - \sqrt{c_4}) < \alpha_2 \cdot \sigma_{\text{floor}}$$
 
-$$\tau_{\text{high}} \approx \frac{\beta}{0.108} \cdot \tau_{\text{low}} / \alpha \approx 9.3 \cdot \frac{\beta}{\alpha} \cdot \tau_{\text{low}}$$
+$$\tau_2 = \alpha_2 \cdot \frac{\sigma_{\text{floor}}}{\sigma_V\sqrt{d} \cdot (\sqrt{c_2} - \sqrt{c_4})}$$
 
-With $\alpha = \beta = 1$: $\tau_{\text{high}} \approx 9.3 \cdot \tau_{\text{low}}$
+For $\sqrt{c_2} - \sqrt{c_4} = 0.603 - 0.189 = 0.414$:
+$$\tau_2 \approx \frac{\alpha_2}{0.414} \cdot \tau_1 / \alpha_1 \approx 2.4 \cdot \frac{\alpha_2}{\alpha_1} \cdot \tau_1$$
+
+**$\tau_3$ (precision upgrade threshold):** Same derivation as v1, now between V=4-bit and V=6-bit:
+$$\tau_3 = \alpha_3 \cdot \frac{\sigma_{\text{floor}}}{\sigma_V\sqrt{d} \cdot (\sqrt{c_4} - \sqrt{c_6})}$$
+
+For $\sqrt{c_4} - \sqrt{c_6} = 0.189 - 0.081 = 0.108$:
+$$\tau_3 \approx \frac{\alpha_3}{0.108} \cdot \tau_1 / \alpha_1 \approx 9.3 \cdot \frac{\alpha_3}{\alpha_1} \cdot \tau_1$$
+
+With $\alpha_1 = \alpha_2 = \alpha_3 = 1$: $\tau_1 : \tau_2 : \tau_3 \approx 1 : 2.4 : 9.3$
 
 ### 6.3 Compression Ratio
 
-Let $f_{\text{hi}}, f_{\text{med}}, f_{\text{lo}}$ be the fraction of tokens in each tier (summing to 1). Then:
+Let $f_{\text{crit}}, f_{\text{std}}, f_{\text{deg}}, f_{\text{evict}}$ be the fraction of tokens in each tier.
 
-$$\rho = \frac{n \cdot (b_K + b_V^{\text{ref}})}{f_{\text{hi}} \cdot n \cdot (b_K + b_V^{\text{hi}}) + f_{\text{med}} \cdot n \cdot (b_K + b_V^{\text{lo}})}$$
+$$\rho = \frac{32}{f_{\text{crit}} \times 12 + f_{\text{std}} \times 10 + f_{\text{deg}} \times 8}$$
 
-$$= \frac{b_K + b_V^{\text{ref}}}{f_{\text{hi}} (b_K + b_V^{\text{hi}}) + f_{\text{med}} (b_K + b_V^{\text{lo}})}$$
+(evicted tokens contribute 0 to denominator)
 
-where $b_V^{\text{ref}} = 16$ (FP16 baseline).
+**Example 1 — Conservative** ($f_{\text{crit}}=0.05, f_{\text{std}}=0.15, f_{\text{deg}}=0.50, f_{\text{evict}}=0.30$):
+$$\rho = \frac{32}{0.6 + 1.5 + 4.0} = \frac{32}{6.1} \approx 5.2\times$$
 
-**Example:** With $f_{\text{hi}} = 0.05, f_{\text{med}} = 0.15, f_{\text{lo}} = 0.80$, $b_K = 6, b_V^{\text{hi}} = 6, b_V^{\text{lo}} = 4$:
+**Example 2 — Aggressive** ($f_{\text{crit}}=0.03, f_{\text{std}}=0.07, f_{\text{deg}}=0.40, f_{\text{evict}}=0.50$):
+$$\rho = \frac{32}{0.36 + 0.7 + 3.2} = \frac{32}{4.26} \approx 7.5\times$$
 
-$$\rho = \frac{16 + 16}{0.05 \times (6+6) + 0.15 \times (6+4)} = \frac{32}{0.6 + 1.5} = \frac{32}{2.1} \approx 15.2\times$$
+**Example 3 — Maximum** ($f_{\text{crit}}=0.02, f_{\text{std}}=0.03, f_{\text{deg}}=0.15, f_{\text{evict}}=0.80$):
+$$\rho = \frac{32}{0.24 + 0.3 + 1.2} = \frac{32}{1.74} \approx 18.4\times$$
 
-With more aggressive eviction ($f_{\text{lo}} = 0.90, f_{\text{med}} = 0.07, f_{\text{hi}} = 0.03$):
-$$\rho = \frac{32}{0.03 \times 12 + 0.07 \times 10} = \frac{32}{0.36 + 0.7} = \frac{32}{1.06} \approx 30.2\times$$
+**Reality check:** 30x requires $f_{\text{evict}} > 0.90$ with most remaining tokens at V=2-bit. This is only achievable if:
+- The attention distribution is extremely heavy-tailed
+- V=2-bit on low-attention tokens truly does not damage PPL
+- Both conditions hold across all layers and all evaluation contexts
 
-**This confirms 30x is achievable** with 90% eviction + asymmetric quantization, matching our target.
+**H-001 lesson:** The gap between theoretical bound and PPL impact is larger than expected. The 30x target may require fundamental rethinking beyond the four-tier quantization approach — potentially moving to learned compression (autoencoders) or task-specific evaluation metrics.
 
 ---
 
