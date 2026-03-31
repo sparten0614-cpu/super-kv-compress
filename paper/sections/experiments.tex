@@ -66,8 +66,8 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
  & FP16       & 9.334  & ---       & 100\% & 1x \\
  & TQKV\_6    & 9.351  & +0.18\%   & 100\% & 2.67x \\
 \midrule
-Llama-3.3-70B & q8\_0 & 3.720  & ---       & TBD   & 2x \\
-              & q4\_0  & 3.838  & +3.17\%   & TBD   & 4x \\
+Llama-3.3-70B & q8\_0 & 3.720  & ---       & 100\% & 2x \\
+              & q4\_0  & 3.838  & +3.17\%   & 100\% & 4x \\
 \bottomrule
 \end{tabular}
 \caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at 4-bit.}
@@ -83,19 +83,21 @@ Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL i
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lrr}
+\begin{tabular}{lrrl}
 \toprule
-\textbf{Qwen KV Config} & \textbf{PPL} & \textbf{$\Delta$PPL} \\
+\textbf{Qwen KV Config} & \textbf{PPL} & \textbf{$\Delta$PPL} & \textbf{Status} \\
 \midrule
-FP16 (K+V) & 5.660 & --- \\
-q8\_0 (K+V) & 5.548 & $-$1.98\% \\
-q4\_0 (K+V) & 6615 & catastrophic \\
-q4\_1 (K+V) & 8392 & catastrophic \\
-K=q4\_0, V=FP16 & 9693 & catastrophic \\
-K=FP16, V=q4\_0 & TBD & TBD \\
+K=FP16, V=FP16 & 5.660 & --- & baseline \\
+K=q8\_0, V=q8\_0 & 5.548 & $-$1.98\% & OK \\
+K=FP16, V=q4\_0 & 5.577 & $-$1.47\% & OK \\
+K=q8\_0, V=q4\_0 & 5.578 & $-$1.45\% & OK \\
+\midrule
+K=q4\_0, V=FP16 & 9694 & catastrophic & \textbf{K kills it} \\
+K=q4\_0, V=q4\_0 & 6616 & catastrophic & \\
+q4\_1 (K+V) & 8392 & catastrophic & \\
 \bottomrule
 \end{tabular}
-\caption{Qwen2.5-7B asymmetric quantization diagnostic. K-quantization alone causes catastrophic failure, confirming K as the root cause.}
+\caption{Qwen2.5-7B asymmetric quantization diagnostic. V tolerates q4\_0 safely; K at q4\_0 causes catastrophic failure regardless of V precision. The optimal Qwen config is K=q8\_0, V=q4\_0 ($\sim$2.5x compression).}
 \label{tab:qwen-diagnostic}
 \end{table}
 
@@ -107,10 +109,14 @@ K=q4\_0 with V=FP16 produces PPL 9693---confirming that \textbf{K-quantization a
     \item \textbf{Layer 0 outlier as trigger.} Qwen Layer 0 exhibits $K_\text{max}=93$ (extreme outlier), dominating the q4\_0 quantization range and destroying precision for normal-magnitude entries. Skipping Layer 0 from quantization reduces degradation from $+$104\% to $+$7.1\%.
 \end{enumerate}
 
-\paragraph{Mitigation: GQA-aware quantization.}
+\paragraph{Key Finding 2b: V is robust, K is fragile.}
+The asymmetric diagnostic (Table~\ref{tab:qwen-diagnostic}) reveals a clean separation: V=q4\_0 with any K precision produces normal PPL (5.577--5.578), while K=q4\_0 with any V precision is catastrophic (6616--9694). This is because K errors enter the softmax nonlinearity ($\text{softmax}(QK^T/\sqrt{d})$) where they distort the entire attention distribution, while V errors are merely linearly averaged. The optimal Qwen config is K=q8\_0, V=q4\_0 ($\sim$2.5$\times$ compression, PPL 5.578).
+
+\paragraph{Mitigation: GQA-aware asymmetric quantization.}
 \begin{itemize}
-    \item $n_\text{kv} \leq 4$: minimum safe bit width $\geq$ 6-bit (+ outlier layer skip)
-    \item $n_\text{kv} \geq 8$: 4-bit safe across tested models
+    \item $n_\text{kv} \leq 4$: K $\geq$ 8-bit, V $\geq$ 4-bit (+ outlier layer skip)
+    \item $n_\text{kv} \geq 8$: K $\geq$ 4-bit, V $\geq$ 4-bit safe across tested models
+    \item General rule: K precision $\geq$ V precision, with the gap increasing as GQA ratio increases
 \end{itemize}
 
 %% ============================================================
