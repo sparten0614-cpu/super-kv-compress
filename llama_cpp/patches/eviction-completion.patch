@@ -1,0 +1,107 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index ece116e..9fc991f 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2093,6 +2093,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.ppl_output_type = value;
+         }
+     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
++    add_opt(common_arg(
++        {"--evict-ratio"}, "N",
++        string_format("KV cache eviction ratio (0.0-0.9, default: %.1f)", (double)params.evict_ratio),
++        [](common_params & params, const std::string & value) {
++            params.evict_ratio = std::stof(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-mode"}, "N",
++        string_format("Eviction mode: 0=sliding window, 1=StreamingLLM (keep first+last) (default: %d)", params.evict_mode),
++        [](common_params & params, const std::string & value) {
++            params.evict_mode = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-sink"}, "N",
++        string_format("Number of attention sink tokens to keep at start (StreamingLLM mode) (default: %d)", params.evict_sink),
++        [](common_params & params, const std::string & value) {
++            params.evict_sink = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
+     add_opt(common_arg(
+         {"-dt", "--defrag-thold"}, "N",
+         string_format("KV cache defragmentation threshold (DEPRECATED)"),
+diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
+index 716a30f..c79f0cd 100644
+--- a/tools/completion/completion.cpp
++++ b/tools/completion/completion.cpp
+@@ -620,27 +620,60 @@ int main(int argc, char ** argv) {
+                 // - take the n_keep first tokens from the original prompt (via n_past)
+                 // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
+ 
+-                if (n_past + (int) embd.size() >= n_ctx) {
+-                    if (!params.ctx_shift){
++                // StreamingLLM eviction: use smaller cache budget
++                const bool has_eviction = params.evict_ratio > 0.0f;
++                const int cache_budget = has_eviction
++                    ? std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)))
++                    : n_ctx;
++                const int ctx_threshold = has_eviction ? cache_budget : n_ctx;
++
++                if (n_past + (int) embd.size() >= ctx_threshold) {
++                    if (!has_eviction && !params.ctx_shift){
+                         LOG_WRN("\n\n%s: context full and context shift is disabled => stopping\n", __func__);
+                         break;
+                     }
+ 
+-                    if (params.n_predict == -2) {
++                    if (!has_eviction && params.n_predict == -2) {
+                         LOG_WRN("\n\n%s: context full and n_predict == %d => stopping\n", __func__, params.n_predict);
+                         break;
+                     }
+ 
+-                    const int n_left    = n_past - params.n_keep;
+-                    const int n_discard = n_left/2;
++                    if (has_eviction && params.evict_mode == 1) {
++                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
++                        const int sink = std::min(params.evict_sink, cache_budget / 2);
++                        const int n_discard = n_past + (int) embd.size() - cache_budget;
++                        if (n_discard > 0) {
++                            const int evict_start = sink;
++                            const int evict_end = evict_start + n_discard;
++                            LOG_DBG("StreamingLLM evict: n_past=%d, sink=%d, evict [%d,%d), budget=%d\n",
++                                    n_past, sink, evict_start, evict_end, cache_budget);
++                            llama_memory_seq_rm (mem, 0, evict_start, evict_end);
++                            llama_memory_seq_add(mem, 0, evict_end, n_past, -n_discard);
++                            n_past -= n_discard;
++                        }
++                    } else if (has_eviction) {
++                        // Sliding window eviction: evict oldest (after sink)
++                        const int n_discard = n_past + (int) embd.size() - cache_budget;
++                        if (n_discard > 0) {
++                            LOG_DBG("sliding evict: n_past=%d, evict [0,%d), budget=%d\n",
++                                    n_past, n_discard, cache_budget);
++                            llama_memory_seq_rm (mem, 0, 0, n_discard);
++                            llama_memory_seq_add(mem, 0, n_discard, n_past, -n_discard);
++                            n_past -= n_discard;
++                        }
++                    } else {
++                        // Original context shifting
++                        const int n_left    = n_past - params.n_keep;
++                        const int n_discard = n_left/2;
+ 
+-                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
+-                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++                        LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
++                                n_past, n_left, n_ctx, params.n_keep, n_discard);
+ 
+-                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
+-                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++                        llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
++                        llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
+ 
+-                    n_past -= n_discard;
++                        n_past -= n_discard;
++                    }
+ 
+                     LOG_DBG("after swap: n_past = %d\n", n_past);
+ 
