@@ -58,7 +58,7 @@ def build_prompt(needle, haystack_unit, target_ctx_tokens, needle_position_pct, 
     return prompt_text
 
 
-def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_layers=99, skip_layers=None, evict_mode=None, evict_ratio=None, evict_sink=None):
+def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_layers=99, skip_layers=None, evict_mode=None, evict_ratio=None, evict_sink=None, h2o_eviction=False):
     """Run a single NIAH test and return whether the needle was found."""
 
     # Reserve some tokens for the answer
@@ -93,6 +93,9 @@ def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_l
         cmd.extend(["--evict-ratio", str(evict_ratio)])
     if evict_sink is not None:
         cmd.extend(["--evict-sink", str(evict_sink)])
+
+    if h2o_eviction:
+        cmd.append("--h2o-eviction")
 
     env = os.environ.copy()
     if skip_layers:
@@ -144,6 +147,7 @@ def main():
     parser.add_argument("--evict-mode", type=int, default=None, help="Eviction mode (0=sliding, 1=StreamingLLM)")
     parser.add_argument("--evict-ratio", type=float, default=None, help="Eviction ratio (0.0-0.9)")
     parser.add_argument("--evict-sink", type=int, default=None, help="Attention sink tokens")
+    parser.add_argument("--h2o-eviction", action="store_true", help="Use H2O attention-aware eviction")
     args = parser.parse_args()
 
     positions = [float(p) for p in args.positions.split(",")]
@@ -151,7 +155,8 @@ def main():
 
     evict_label = ""
     if args.evict_ratio is not None:
-        evict_label = f" + eviction {args.evict_ratio:.0%}"
+        method = "H2O" if args.h2o_eviction else "StreamingLLM"
+        evict_label = f" + {method} {args.evict_ratio:.0%}"
 
     print(f"NIAH Test Configuration:")
     print(f"  Model: {args.model}")
@@ -159,7 +164,8 @@ def main():
     print(f"  Positions: {positions}")
     print(f"  Cache types: {cache_types}")
     if args.evict_mode is not None:
-        print(f"  Eviction: mode={args.evict_mode} ratio={args.evict_ratio} sink={args.evict_sink}")
+        method = "H2O" if args.h2o_eviction else "StreamingLLM"
+        print(f"  Eviction: mode={args.evict_mode} ratio={args.evict_ratio} sink={args.evict_sink} method={method}")
     print(f"  Needle: {NEEDLE}")
     print(f"  Question: {QUESTION}")
     print(f"  Expected: {EXPECTED}")
@@ -173,7 +179,8 @@ def main():
             print(f"Testing {label} @ position {pos:.0%}...", end=" ", flush=True)
             r = run_niah_test(args.model, args.ctx, ct if ct != "f16" else None,
                               pos, args.ngl, args.skip_layers,
-                              args.evict_mode, args.evict_ratio, args.evict_sink)
+                              args.evict_mode, args.evict_ratio, args.evict_sink,
+                              args.h2o_eviction)
             results[ct].append(r)
             status = "FOUND" if r["found"] else "MISS"
             print(f"{status} — {r['answer'][:80]}")
