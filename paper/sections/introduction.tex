@@ -1,24 +1,26 @@
 \section{Introduction}
 \label{sec:intro}
 
-Large language models (LLMs) with long context windows face a critical memory bottleneck: the key-value (KV) cache grows linearly with sequence length, consuming memory proportional to $2 \times n \times H \times L \times d \times 16$ bits for $n$ tokens, $H$ attention heads, $L$ layers, and head dimension $d$.
-For a 8B-parameter model at 128K context, the KV cache alone requires $\sim$32~GB in FP16---often exceeding the model weights themselves.
+Large language models (LLMs) with long context windows face a critical memory bottleneck: the key-value (KV) cache grows linearly with sequence length, consuming $2 \times n \times H \times L \times d \times b$ bits for $n$ tokens, $H$ KV heads, $L$ layers, head dimension $d$, and $b$ bits per element.
+For an 8B-parameter model at 128K context in FP16, the KV cache alone requires $\sim$32~GB---often exceeding the model weights.
 
-Existing approaches to KV cache compression fall into two categories: \emph{quantization} (reducing bits per entry) and \emph{eviction} (reducing the number of entries).
-Quantization methods such as KIVI~\citep{kivi2024} and KVQuant~\citep{kvquant2024} achieve 4--8$\times$ compression, while eviction methods like H\textsubscript{2}O~\citep{h2o2023} and ScissorHands~\citep{scissorhands2024} achieve 2--5$\times$.
-However, no post-training method has demonstrated $>$10$\times$ runtime memory compression with controlled quality degradation.
+Two compression paradigms dominate the literature: \emph{quantization} (reducing bits per entry) and \emph{eviction} (reducing the number of entries). Quantization methods such as KIVI~\citep{kivi2024}, KVQuant~\citep{kvquant2024}, and TurboQuant~\citep{turboquant2026} achieve 2--4$\times$ compression, while eviction methods like H\textsubscript{2}O~\citep{h2o2023}, StreamingLLM~\citep{streamingllm2024}, and SnapKV~\citep{snapkv2024} reduce token count by 2--5$\times$. These approaches are typically evaluated using perplexity (PPL) on language modeling benchmarks, with the implicit assumption that low PPL degradation implies preserved model quality.
 
-We present a unified framework that combines three complementary techniques:
+\paragraph{This paper challenges that assumption.} Through a systematic empirical study across five models (7B--70B parameters, three GQA configurations), we uncover three findings that revise the current understanding of KV cache compression:
+
 \begin{enumerate}
-    \item \textbf{Asymmetric quantization} (Layer 1): Keys at 6-bit and Values at 4-bit using rotated Lloyd-Max quantization, achieving 3.2$\times$ compression at $<$1\% perplexity increase.
-    \item \textbf{Attention-aware eviction} (Layer 2): StreamingLLM-style eviction that retains attention sink tokens and recent tokens while discarding middle tokens, with eviction rates guided by a noise-floor threshold derived from quantization error.
-    \item \textbf{Adaptive layer selection} (Layer 3): Outlier layers (identified via calibration) bypass compression entirely, preventing catastrophic per-layer errors.
+    \item \textbf{Quantization safety is architecture-dependent} (\S\ref{sec:exp-quant}, \S\ref{sec:exp-qwen}). 4-bit KV quantization is NIAH-safe on GQA 4:1 models (Llama, Mistral) but catastrophically fails on GQA 7:1 models (Qwen: PPL 5.6$\to$6615, NIAH 100\%$\to$0\%). Asymmetric analysis reveals \textbf{K-quantization}---not V---as the sole root cause, because K errors enter the softmax nonlinearity where they are amplified across all shared query heads.
+
+    \item \textbf{Eviction has a fundamental causal limitation} (\S\ref{sec:exp-niah}). Both attention-aware (H\textsubscript{2}O) and position-based (StreamingLLM) eviction produce identical NIAH degradation (100\%$\to$60\% at 50\% eviction). This is not an algorithmic failure but a \emph{causal} one: eviction decisions are made at prefill time without access to future queries. We formalize this via an information-theoretic analysis showing key vectors carry only 0.12 bits of predictive signal about future attention patterns.
+
+    \item \textbf{Perplexity is a misleading proxy for eviction quality} (\S\ref{sec:exp-metric-gap}). At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while retrieval accuracy drops 40\%---a dangerous false positive. Quantization produces the opposite signature: PPL degrades while retrieval holds. This orthogonality means neither metric alone characterizes compression quality.
 \end{enumerate}
 
-Our contributions are:
+\paragraph{Contributions.}
 \begin{itemize}
-    \item A \textbf{unified error bound} (Theorems~\ref{thm:quant}--\ref{thm:joint}) that decomposes the output error into quantization and eviction components, explaining why Values are more sensitive than Keys and deriving optimal eviction thresholds from the quantization noise floor.
-    \item An \textbf{information-theoretic analysis} showing that our perplexity-constrained compression ratio of $\sim$13$\times$ matches the Shannon rate-distortion bound at practical coding efficiency, proving the ceiling is fundamental.
-    \item The identification of a \textbf{systematic gap between perplexity and task-based evaluation} for eviction-based compression, analogous to the PSNR--VMAF gap in video compression. Under task metrics, 30$\times$+ compression is achievable.
-    \item A \textbf{four-tier token classification} (Critical/Standard/Degraded/Evict) shown to be the discrete approximation to the optimal reverse water-filling bit allocation.
+    \item The first systematic \textbf{cross-model, cross-architecture} evaluation of KV cache compression across GQA ratios (4:1, 7:1, 8:1) and model sizes (7B--70B), revealing that GQA ratio is the primary determinant of quantization safety.
+    \item A \textbf{GQA-aware asymmetric quantization rule}: K precision must increase with GQA ratio (K$\geq$8-bit for $n_\text{kv}\leq$4), while V is universally safe at 4-bit. Combined with outlier layer detection, this provides an immediately deployable configuration for any model.
+    \item Empirical demonstration and theoretical explanation of the \textbf{causal limitation of eviction}, unifying the failure of H\textsubscript{2}O and StreamingLLM as instances of the same information-theoretic constraint.
+    \item A recommendation for \textbf{dual-metric reporting} (PPL + retrieval task) as the minimum standard for KV cache compression evaluation, supported by our metric gap analysis.
+    \item All findings are \textbf{immediately deployable} in llama.cpp---the only mainstream inference framework supporting asymmetric K/V quantization types---without any code modification.
 \end{itemize}
