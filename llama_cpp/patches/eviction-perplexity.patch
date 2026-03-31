@@ -1,0 +1,111 @@
+diff --git a/tools/perplexity/perplexity.cpp b/tools/perplexity/perplexity.cpp
+index 0eb062f..4f4bcb5 100644
+--- a/tools/perplexity/perplexity.cpp
++++ b/tools/perplexity/perplexity.cpp
+@@ -509,11 +509,23 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+     llama_batch batch = llama_batch_init(std::min(n_batch, n_ctx*n_seq), 0, 1);
+ 
+     std::vector<float> logits;
+-    if (num_batches > 1) {
++    const bool has_eviction = params.evict_ratio > 0.0f;
++    if (num_batches > 1 || has_eviction) {
+         logits.reserve(size_t(n_ctx) * n_vocab);
+     }
+ 
+     LOG_INF("%s: calculating perplexity over %d chunks, n_ctx=%d, batch_size=%d, n_seq=%d\n", __func__, n_chunk, n_ctx, n_batch, n_seq);
++    if (has_eviction) {
++        const int cache_budget = std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)));
++        LOG_INF("%s: eviction enabled: ratio=%.1f%%, cache_budget=%d/%d tokens, mode=%s",
++                __func__, params.evict_ratio * 100.0f, cache_budget, n_ctx,
++                params.evict_mode == 1 ? "StreamingLLM" : "sliding_window");
++        if (params.evict_mode == 1) {
++            LOG_INF(", sink=%d\n", params.evict_sink);
++        } else {
++            LOG_INF("\n");
++        }
++    }
+ 
+     std::vector<std::thread> workers(std::thread::hardware_concurrency() - 1);
+ 
+@@ -551,9 +563,60 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+         // clear the KV cache
+         llama_memory_clear(llama_get_memory(ctx), true);
+ 
+-        for (int j = 0; j < num_batches; ++j) {
+-            const int batch_start = start + j * n_batch;
+-            const int batch_size  = std::min(end - batch_start, n_batch);
++        // When eviction is enabled with n_seq=1, use smaller effective batch size for finer-grained eviction
++        // With n_seq > 1, sparse indexing prevents fine-grained batching, so keep original batch size
++        const bool fine_evict = (params.evict_ratio > 0.0f && n_seq == 1);
++        const int eff_batch = fine_evict ? std::min(n_batch, std::max(64, n_ctx / 8)) : n_batch;
++        const int eff_num_batches = fine_evict ? (n_ctx + eff_batch - 1) / eff_batch : num_batches;
++
++        // Eviction state: track the lowest position still in the KV cache
++        int evict_frontier = 0;
++        const int cache_budget = (params.evict_ratio > 0.0f)
++            ? std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)))
++            : n_ctx;
++
++        for (int j = 0; j < eff_num_batches; ++j) {
++            const int batch_start = start + j * eff_batch;
++            const int batch_size  = std::min(end - batch_start, eff_batch);
++
++            // Eviction: before decode, evict tokens if cache would exceed budget
++            if (params.evict_ratio > 0.0f) {
++                const int total_fed = j * eff_batch;  // total tokens fed so far
++                const int kv_used = total_fed - evict_frontier;  // actual tokens currently in cache
++                if (kv_used + batch_size > cache_budget) {
++                    const int need_to_evict = kv_used + batch_size - cache_budget;
++                    llama_memory_t mem = llama_get_memory(ctx);
++
++                    if (params.evict_mode == 1) {
++                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
++                        const int sink = std::min(params.evict_sink, cache_budget / 2);
++                        // evict_frontier must be >= sink (never evict sink tokens)
++                        const int evict_start = std::max(evict_frontier, sink);
++                        const int new_frontier = evict_start + need_to_evict;
++                        if (new_frontier > evict_start) {
++                            for (int seq = 0; seq < n_seq_batch; seq++) {
++                                bool ok = llama_memory_seq_rm(mem, seq, evict_start, new_frontier);
++                                if (i == 0 && j <= 8) {
++                                    LOG_INF("%s: StreamingLLM evict batch=%d seq=%d pos=[%d,%d) ok=%d sink=%d kv_used=%d\n",
++                                            __func__, j, seq, evict_start, new_frontier, (int)ok, sink, kv_used);
++                                }
++                            }
++                            evict_frontier = new_frontier;
++                        }
++                    } else {
++                        // Mode 0: Sliding window — evict oldest tokens
++                        const int new_frontier = evict_frontier + need_to_evict;
++                        for (int seq = 0; seq < n_seq_batch; seq++) {
++                            bool ok = llama_memory_seq_rm(mem, seq, evict_frontier, new_frontier);
++                            if (i == 0 && j <= 8) {
++                                LOG_INF("%s: evict batch=%d seq=%d pos=[%d,%d) ok=%d kv_used=%d\n",
++                                        __func__, j, seq, evict_frontier, new_frontier, (int)ok, kv_used);
++                            }
++                        }
++                        evict_frontier = new_frontier;
++                    }
++                }
++            }
+ 
+             int n_outputs = 0;
+ 
+@@ -572,7 +635,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+                 for (int k = 0; k < batch_size; ++k) {
+                     const int idx = seq*n_ctx + k;
+                     batch.token   [idx]    = tokens[seq_start + k];
+-                    batch.pos     [idx]    = j*n_batch + k;
++                    batch.pos     [idx]    = j*eff_batch + k;
+                     batch.n_seq_id[idx]    = 1;
+                     batch.seq_id  [idx][0] = seq;
+                     batch.logits  [idx]    = batch.pos[idx] >= first ? 1 : 0;
+@@ -590,7 +653,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
+                 return {tokens, -1, logit_history, prob_history};
+             }
+ 
+-            if (num_batches > 1 && n_outputs > 0) {
++            if (eff_num_batches > 1 && n_outputs > 0) {
+                 const auto * batch_logits = llama_get_logits(ctx);
+                 logits.insert(logits.end(), batch_logits, batch_logits + size_t(n_outputs) * n_vocab);
+             }
