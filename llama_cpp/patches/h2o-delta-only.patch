@@ -1,0 +1,25 @@
+diff --git a/common/common.h b/common/common.h
+--- a/common/common.h
++++ b/common/common.h
+@@ -502,6 +502,7 @@
+     int     evict_sink      = 128;   // number of "attention sink" tokens to always keep at the beginning (mode 1)
++    bool    h2o_eviction    = false; // use H2O attention-aware eviction (Heavy-Hitter Oracle)
+                                      //                                       (which is more convenient to use for plotting)
+                                      //
+diff --git a/common/arg.cpp b/common/arg.cpp
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2116,6 +2116,12 @@
+     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--h2o-eviction"},
++        "Use H2O attention-aware eviction (Heavy-Hitter Oracle) instead of position-based",
++        [](common_params & params) {
++            params.h2o_eviction = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
+     add_opt(common_arg(
+         {"-dt", "--defrag-thold"}, "N",
+diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
+--- a/tools/completion/completion.cpp
++++ b/tools/completion/completion.cpp
