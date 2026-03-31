@@ -13,7 +13,7 @@ Two compression paradigms dominate the literature: \emph{quantization} (reducing
 
     \item \textbf{Eviction has a fundamental causal limitation} (\S\ref{sec:exp-niah}). Both attention-aware (H\textsubscript{2}O) and position-based (StreamingLLM) eviction produce identical NIAH degradation (100\%$\to$60\% at 50\% eviction). This is not an algorithmic failure but a \emph{causal} one: eviction decisions are made at prefill time without access to future queries. We formalize this via an information-theoretic analysis showing key vectors carry only 0.12 bits of predictive signal about future attention patterns.
 
-    \item \textbf{Perplexity is a misleading proxy for eviction quality} (\S\ref{sec:exp-metric-gap}). At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while retrieval accuracy drops 40\%---a dangerous false positive. Quantization produces the opposite signature: PPL degrades while retrieval holds. This orthogonality means neither metric alone characterizes compression quality.
+    \item \textbf{Perplexity is a misleading proxy for eviction quality} (\S\ref{sec:exp-metric-gap}). At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while retrieval accuracy drops from 100\% to 60\%---a dangerous false positive. Quantization produces the opposite signature: PPL degrades while retrieval holds. This orthogonality means neither metric alone characterizes compression quality.
 \end{enumerate}
 
 \paragraph{Contributions.}

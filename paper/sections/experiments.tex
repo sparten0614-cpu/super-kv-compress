@@ -53,8 +53,8 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
 \midrule
 \multirow{3}{*}{Mistral-7B}
  & FP16       & 5.038  & ---       & 100\% & 1x \\
- & q8\_0      & TBD    & TBD       & TBD   & 2x \\
- & q4\_0      & 5.101  & +1.25\%   & TBD   & 4x \\
+ & q8\_0      & 5.037  & $-$0.03\% & 100\% & 2x \\
+ & q4\_0      & 5.101  & +1.25\%   & 100\% & 4x \\
 \midrule
 \multirow{4}{*}{Qwen2.5-7B}
  & FP16       & 5.660  & ---       & 100\% & 1x \\
@@ -66,11 +66,11 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
  & FP16       & 9.334  & ---       & 100\% & 1x \\
  & TQKV\_6    & 9.351  & +0.18\%   & 100\% & 2.67x \\
 \midrule
-Llama-3.3-70B & q8\_0 & 3.720  & ---       & 100\% & 2x \\
+Llama-3.3-70B$^\dagger$ & q8\_0 & 3.720  & ---       & 100\% & 2x \\
               & q4\_0  & 3.838  & +3.17\%   & 100\% & 4x \\
 \bottomrule
 \end{tabular}
-\caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at 4-bit.}
+\caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at 4-bit. $^\dagger$70B FP16 baseline OOM at 16K; q8\_0 used as reference.}
 \label{tab:quant-baseline}
 \end{table}
 
@@ -102,7 +102,7 @@ q4\_1 (K+V) & 8392 & catastrophic & \\
 \end{table}
 
 \paragraph{Key Finding 2: K-quantization is the root cause.}
-K=q4\_0 with V=FP16 produces PPL 9693---confirming that \textbf{K-quantization alone} destroys Qwen at 4-bit. Two factors contribute:
+K=q4\_0 with V=FP16 produces PPL 9694---confirming that \textbf{K-quantization alone} destroys Qwen at 4-bit. Two factors contribute:
 
 \begin{enumerate}
     \item \textbf{GQA ratio as vulnerability factor.} With $n_\text{kv}=4$, each KV head is shared by 7 query heads. K-quantization error enters the softmax as $\text{softmax}((Q + \delta Q)(K + \delta K)^T / \sqrt{d})$, where $\delta K$ is amplified by all 7 query heads simultaneously. Fewer KV heads means less redundancy and higher per-head information density.
