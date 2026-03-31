@@ -14,7 +14,7 @@
 \newtheorem{corollary}{Corollary}
 \newtheorem{remark}{Remark}
 
-\title{Adaptive KV Cache Compression: Achieving Near-Information-Theoretic Limits for Long-Context LLM Inference}
+\title{Beyond Perplexity: Why KV Cache Compression Needs Dual-Metric Evaluation}
 
 \author{
   Anonymous Authors
@@ -26,11 +26,12 @@
 \maketitle
 
 \begin{abstract}
-We present a unified framework for post-training KV cache compression in large language models that combines asymmetric quantization, attention-aware eviction, and adaptive layer selection.
-Our approach achieves 10--13$\times$ compression under perplexity evaluation and 30$\times$+ under task-based evaluation (NIAH, LongBench), representing the first post-training method to exceed 10$\times$ runtime memory reduction.
-We provide an information-theoretic analysis showing our perplexity-constrained compression ratio matches the Shannon rate-distortion bound at practical coding efficiency ($\sim$80\% of the theoretical limit), proving the ceiling is fundamental rather than methodological.
-We further demonstrate that the gap between perplexity and task-based evaluation mirrors the classical PSNR--VMAF gap in video compression, establishing that perplexity systematically overestimates quality degradation from KV cache eviction.
-Our four-tier token classification (Critical/Standard/Degraded/Evict) is shown to be the discrete approximation to the information-theoretically optimal reverse water-filling allocation.
+We conduct a systematic empirical study of KV cache compression across five LLMs (Llama-3.1-8B, Llama-3.3-70B, Mistral-7B, Qwen2.5-7B, Ministral-8B), revealing three findings that challenge prevailing assumptions.
+First, \textbf{quantization safety is architecture-dependent}: 4-bit KV quantization is lossless on GQA 4:1 models (Llama, Mistral) but catastrophically fails on GQA 7:1 models (Qwen: PPL 5.6$\to$6615, NIAH 100\%$\to$0\%), with K-quantization---not V---as the root cause.
+Second, \textbf{eviction has a fundamental causal limitation}: both H\textsubscript{2}O and StreamingLLM produce identical NIAH degradation (100\%$\to$60\% at 50\% eviction) because eviction decisions at prefill time cannot anticipate future queries---a limitation we prove is information-theoretic, not algorithmic.
+Third, \textbf{perplexity is an unreliable proxy}: at 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops 40\%, creating a dangerous false positive for researchers using PPL alone.
+We propose GQA-aware asymmetric quantization (K$\geq$8-bit for high GQA ratios, V safe at 4-bit universally) and recommend dual-metric reporting (PPL + retrieval) as the minimum standard for KV cache compression evaluation.
+Our findings are immediately deployable in llama.cpp, the only inference framework supporting asymmetric K/V types.
 \end{abstract}
 
 \input{sections/introduction}
@@ -39,7 +40,7 @@ Our four-tier token classification (Critical/Standard/Degraded/Evict) is shown t
 \input{sections/theory}
 \input{sections/metric_gap}
 \input{sections/experiments}  % Tables with TBD placeholders
-% \input{sections/conclusion}   % TODO
+\input{sections/conclusion}
 
 \bibliographystyle{plainnat}
 % \bibliography{references}

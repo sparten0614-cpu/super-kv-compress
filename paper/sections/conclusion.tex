@@ -1,0 +1,42 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented a systematic empirical study of KV cache compression across five models spanning 7B--70B parameters, three GQA ratios, and two compression paradigms (quantization vs.\ eviction). Our findings revise several assumptions in the KV cache compression literature:
+
+\paragraph{1. Quantization safety is not universal.}
+While 4-bit KV quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral: $\leq$3\% PPL increase, 100\% NIAH), it catastrophically fails on GQA 7:1 models (Qwen: PPL $\to$6615, NIAH $\to$0\%). The root cause is K-quantization: V tolerates 4-bit universally, but K errors enter the softmax nonlinearity where they are amplified by all shared query heads. We propose a \textbf{GQA-aware quantization rule}: K precision must increase with GQA ratio, while V precision can remain aggressive.
+
+\paragraph{2. Eviction has a fundamental causal limitation.}
+Both attention-aware (H\textsubscript{2}O) and position-based (StreamingLLM) eviction produce identical NIAH degradation at matched eviction rates. This is not an algorithmic limitation---it is a causal one. Eviction decisions are made at prefill time without access to future queries. We survey 20+ methods for predicting future attention (\S\ref{sec:theory}) and find that key vectors carry only 0.12 bits of predictive information about future attention patterns~\citep{limits-scoring-2026}, establishing the difficulty as information-theoretic.
+
+\paragraph{3. Perplexity is a misleading metric for eviction.}
+At 50\% eviction, PPL improves ($-$0.09\%) while NIAH drops from 100\% to 60\%---a dangerous false positive. Quantization produces the opposite signature: PPL degrades (+3\%) while NIAH holds at 100\%. These orthogonal responses mean neither metric alone characterizes compression quality. We recommend \textbf{dual-metric reporting} (PPL + retrieval) as the minimum standard.
+
+\paragraph{4. Three orthogonal compression axes.}
+KV cache compression operates along three independent axes: \emph{dimension reduction} (low-rank projection, 1.5--2$\times$), \emph{bit reduction} (quantization, 2.67--4$\times$), and \emph{token reduction} (eviction, 2--5$\times$). No prior work systematically studies their interaction. Our experiments show the axes are largely orthogonal, suggesting multiplicative compression is achievable---but the token reduction axis is constrained by the causal limitation for retrieval-critical applications.
+
+\subsection{Practical Recommendations}
+
+Based on our cross-model empirical results:
+
+\begin{enumerate}
+    \item \textbf{Always use asymmetric K/V quantization.} K is more sensitive than V due to softmax amplification. Set K precision $\geq$ V precision, with the gap increasing for higher GQA ratios.
+    \item \textbf{Profile outlier layers before deployment.} A single outlier layer (e.g., Qwen Layer 0, $K_\text{max}=93$) can render quantization catastrophic. Skip these layers or use higher precision.
+    \item \textbf{Do not use PPL alone to evaluate eviction.} PPL can show improvement while retrieval collapses. Always include a retrieval task (NIAH or equivalent).
+    \item \textbf{Match eviction aggressiveness to context length.} The 1\% PPL cliff shifts from $\sim$53\% at 4K to $\sim$67\% at 16K, following $f(n) = 0.277 + 0.0405 \ln(n)$.
+    \item \textbf{Do not assume cross-model consistency for eviction.} Mistral tolerates 85\% eviction where Llama fails at 67\%. Quantization behavior is more consistent ($\sim$3\% at q4\_0 across 8B--70B).
+\end{enumerate}
+
+\subsection{Limitations}
+
+Our study has several limitations. First, all experiments use llama.cpp's GGUF quantization types; results may differ with calibrated quantization methods (GPTQ, AWQ) that can handle outliers more gracefully. Second, our NIAH evaluation uses a single-needle synthetic benchmark; multi-needle or natural retrieval tasks may show different sensitivity profiles. Third, we do not evaluate methods requiring fine-tuning (DMC, LookaheadKV), which may achieve better compression--quality trade-offs at the cost of training compute. Fourth, eviction experiments use StreamingLLM and H\textsubscript{2}O only; more sophisticated eviction methods (SnapKV, PyramidKV) may shift the cliff positions.
+
+\subsection{Future Work}
+
+Several directions emerge from our findings:
+\begin{itemize}
+    \item \textbf{Selective recompute:} Store all tokens at ultra-low precision plus token IDs; at decode time, use low-precision attention to identify top-$k$ important tokens and recompute their full-precision KV on the fly. Our theoretical analysis suggests 34.6$\times$ compression at 100\% NIAH with $\sim$11\% compute overhead (\S\ref{sec:theory}).
+    \item \textbf{Expected Attention for NIAH-safe eviction:} Model future queries as Gaussian-distributed and compute closed-form expected attention scores---a training-free approach to the causal limitation.
+    \item \textbf{GQA-aware compression toolkit:} An open-source tool that automatically profiles model architecture, detects outlier layers, and recommends optimal asymmetric K/V configurations.
+    \item \textbf{PALU-style low-rank stacking:} Adding a fused linear dimension reduction layer (1.5--2$\times$) on top of quantization and eviction as a fourth compression axis.
+\end{itemize}
