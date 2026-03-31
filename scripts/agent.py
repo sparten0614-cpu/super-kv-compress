@@ -225,17 +225,26 @@ or better quality at similar compression."""
                                    self.niah_script)
                 niah_time = time.time() - t0
 
+        # Compute ppl_delta if we have baseline
+        ppl_delta = None
+        baseline = [r for r in self.load_results()
+                    if r.get("quant_k") == "f16" and r.get("evict_ratio", 0) == 0]
+        if baseline and baseline[0].get("ppl") and ppl:
+            ppl_delta = round((ppl - baseline[0]["ppl"]) / baseline[0]["ppl"] * 100, 2)
+
         result = {
             "quant_k": qk, "quant_v": qv,
             "evict_ratio": er, "evict_method": em,
             "skip_layers": sl,
             "compression": round(comp, 3),
             "ppl": round(ppl, 4) if ppl else None,
+            "ppl_delta": ppl_delta,
             "niah": round(niah_acc, 2) if niah_acc is not None else None,
             "ppl_time_s": round(ppl_time, 1),
             "niah_time_s": round(niah_time, 1),
             "ctx": self.ctx,
             "model": os.path.basename(self.model),
+            "phase": "agent",
             "agent_proposed": True,
             "reasoning": config.get("reasoning", ""),
         }

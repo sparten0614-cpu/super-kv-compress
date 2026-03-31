@@ -270,6 +270,18 @@ def main():
     print(f"{'='*60}\n")
 
     results_all = []
+    baseline_ppl = None
+
+    # Try to find baseline from existing results
+    if os.path.exists(results_file):
+        with open(results_file) as f:
+            for line in f:
+                try:
+                    r = json.loads(line.strip())
+                    if r.get("quant_k") == "f16" and r.get("quant_v") == "f16" and r.get("evict_ratio", 0) == 0:
+                        baseline_ppl = r.get("ppl")
+                except:
+                    pass
 
     for i, cfg in enumerate(configs):
         qk, qv = cfg["quant_k"], cfg["quant_v"]
@@ -300,18 +312,29 @@ def main():
                                args.niah_script)
             niah_time = time.time() - t0
 
+        # Compute PPL delta vs baseline
+        ppl_delta = None
+        if ppl is not None and baseline_ppl is not None and baseline_ppl > 0:
+            ppl_delta = round((ppl - baseline_ppl) / baseline_ppl * 100, 2)
+
         result = {
             "quant_k": qk, "quant_v": qv,
             "evict_ratio": er, "evict_method": em,
             "skip_layers": sl,
             "compression": round(comp, 3),
             "ppl": round(ppl, 4) if ppl else None,
+            "ppl_delta": ppl_delta,
             "niah": round(niah_acc, 2) if niah_acc is not None else None,
             "ppl_time_s": round(ppl_time, 1),
             "niah_time_s": round(niah_time, 1),
             "ctx": args.ctx,
             "model": os.path.basename(args.model),
+            "phase": "grid",
         }
+
+        # Track baseline PPL from f16/f16/0% result
+        if qk == "f16" and qv == "f16" and er == 0 and ppl is not None and baseline_ppl is None:
+            baseline_ppl = ppl
 
         results_all.append(result)
 
