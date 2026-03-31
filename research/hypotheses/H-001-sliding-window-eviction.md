@@ -1,6 +1,6 @@
 # H-001: Sliding Window Eviction
 
-**Status:** Active 🔄
+**Status:** Refuted ❌
 **Date:** 2026-03-31
 **Owner:** 阳阳 (implementation + experiment)
 
@@ -22,11 +22,20 @@ A sliding window eviction strategy can safely discard KV entries for tokens outs
 - 25% retention (4x eviction): <2% PPL increase
 - Combined with K6V4 (3.2x): 25% retention → 3.2 × 4 = 12.8x total
 
-## Current Status
+## Results (2026-03-31)
 
-- 阳阳 implementing sliding window eviction in llama.cpp
-- 5 eviction configurations ready to test
-- Awaiting implementation completion
+**Catastrophic failure.** 10% eviction → PPL +163%.
+
+### Root Cause
+Oldest tokens contain semantic anchors (titles, subjects, discourse markers). Blind temporal eviction removes exactly the tokens with highest long-range attention weight — the worst possible eviction strategy.
+
+### Implications
+- Time-based eviction is fundamentally flawed for PPL evaluation
+- PPL uses geometric mean — even one badly predicted token from missing context spikes the metric
+- Attention-aware eviction (H-001c) may still work, but needs worst-case guarantees, not average-case bounds
+
+### Next: H-001b (StreamingLLM)
+阳阳 testing: retain first 128 + recent tokens, evict middle. Expected to perform better (preserves semantic anchors) but mid-range dependencies (coreference, etc.) will still degrade.
 
 ## Dependencies
 
