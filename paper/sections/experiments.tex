@@ -125,29 +125,29 @@ The asymmetric diagnostic (Table~\ref{tab:qwen-diagnostic}) reveals a clean sepa
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrrrr}
 \toprule
-\textbf{Eviction \%} & \textbf{Llama 4K} & \textbf{Llama 16K} & \textbf{Mistral 16K} & \textbf{Cliff?} \\
+\textbf{Eviction \%} & \textbf{Llama 4K} & \textbf{Llama 16K} & \textbf{Mistral 16K} & \textbf{70B 16K} & \textbf{Cliff?} \\
 \midrule
-0\%  & +0.00\% & +0.00\%  & +0.00\%  & \\
-10\% &$-$0.07\%& ---      & ---      & \\
-30\% &$-$0.20\%&$-$0.17\% & ---      & \\
-50\% & +0.46\% &$-$0.09\% & +0.36\%  & \\
-60\% & +1.40\% &$-$0.003\%& +0.30\%  & \\
-70\% & +3.39\% & +1.04\%  & +0.26\%  & Llama 16K \\
-80\% & +9.22\% & +3.36\%  & ---      & \\
-85\% & ---     & +7.50\%  & +4.66\%  & Mistral 16K \\
+0\%  & +0.00\% & +0.00\%  & +0.00\%  & +0.00\%  & \\
+10\% &$-$0.07\%& ---      & ---      & ---      & \\
+30\% &$-$0.20\%&$-$0.17\% & ---      & ---      & \\
+50\% & +0.46\% &$-$0.09\% & +0.36\%  & $-$0.32\%& \\
+60\% & +1.40\% &$-$0.003\%& +0.30\%  & ---      & \\
+70\% & +3.39\% & +1.04\%  & +0.26\%  & $-$0.27\%& \\
+80\% & +9.22\% & +3.36\%  & ---      & ---      & \\
+85\% & ---     & +7.50\%  & +4.66\%  & ---      & Mistral 16K \\
 \bottomrule
 \end{tabular}
-\caption{StreamingLLM eviction PPL gradient. Cliff position is model-dependent: Llama at $\sim$67\%, Mistral at $\sim$85\% (more robust). Longer context shifts the cliff right.}
+\caption{StreamingLLM eviction PPL gradient. 70B at 16K shows \emph{no cliff} up to 70\% eviction (PPL improves). Cliff position is model- and scale-dependent: Llama-8B at $\sim$67\%, Mistral at $\sim$85\%, 70B above 70\%. Longer context and larger models shift the cliff right.}
 \label{tab:eviction-gradient}
 \end{table}
 
-\paragraph{Key Finding 3: Eviction cliff is model-dependent but universal.}
-All models exhibit a convex PPL curve with a sharp ``cliff'' where degradation accelerates. Mistral is substantially more robust than Llama (cliff at 85\% vs 67\%), possibly due to its sliding window attention mechanism. The cliff position shifts right (more tolerant) with longer context, following $f(n) = 0.277 + 0.0405 \ln(n)$.
+\paragraph{Key Finding 3: Eviction cliff scales with model size and context.}
+All models exhibit a convex PPL curve with a ``cliff,'' but its position varies dramatically: Llama-8B at $\sim$67\% (16K), Mistral-7B at $\sim$85\% (16K), and Llama-70B shows \textbf{no cliff up to 70\% eviction at 16K} (PPL improves at both 50\% and 70\%). The same 70B model at 4K context shows +26\% at 50\% eviction---confirming that context length is the dominant factor, not model quality. The cliff shifts right with both longer context ($f(n) = 0.277 + 0.0405 \ln(n)$) and larger model scale.
 
 \paragraph{Key Finding 4: PPL can \emph{improve} under moderate eviction.}
-At 30--60\% eviction on 16K context, Llama PPL actually \emph{decreases} ($-$0.17\% at 30\%, $-$0.003\% at 60\%). This counterintuitive result suggests that some tokens add noise to the attention distribution, and removing them helps. This has implications for the PPL--task gap (\S\ref{sec:exp-metric-gap}).
+At 30--70\% eviction on 16K context, both Llama-8B and Llama-70B show PPL \emph{improvement} (up to $-$0.32\% for 70B at 50\%). This counterintuitive result suggests that evicted tokens add noise to the attention distribution; removing them is beneficial for average prediction quality. This is precisely why PPL is misleading for eviction---it rewards compression that harms retrieval (\S\ref{sec:exp-metric-gap}).
 
 %% ============================================================
 \subsection{Experiment 4: NIAH Retrieval Matrix}
@@ -188,19 +188,19 @@ At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops to 60\%. This
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
-\textbf{Eviction \%} & \textbf{Llama 8B} & \textbf{Mistral 7B} & \textbf{Ratio} \\
+\textbf{Eviction \%} & \textbf{Llama 8B} & \textbf{Mistral 7B} & \textbf{Llama 70B} \\
 \midrule
-50\% & $-$0.09\% & +0.36\% & --- \\
+50\% & $-$0.09\% & +0.36\% & $-$0.32\% \\
 60\% & $-$0.003\% & +0.30\% & --- \\
-70\% & +1.04\% & +0.26\% & 4.0x \\
-85\% & +7.50\% & +4.66\% & 1.6x \\
+70\% & +1.04\% & +0.26\% & $-$0.27\% \\
+85\% & +7.50\% & +4.66\% & TBD \\
 \midrule
-\textbf{1\% cliff} & \textbf{$\sim$67\%} & \textbf{$\sim$85\%} & --- \\
+\textbf{1\% cliff} & \textbf{$\sim$67\%} & \textbf{$\sim$85\%} & \textbf{$>$70\%} \\
 \bottomrule
 \end{tabular}
-\caption{Cross-model eviction robustness (StreamingLLM, 16K). Mistral is $\sim$18 percentage points more eviction-tolerant than Llama, possibly due to sliding window attention training.}
+\caption{Cross-model eviction robustness (StreamingLLM, 16K). 70B is the most eviction-tolerant---PPL \emph{improves} at 70\% eviction. Larger models and models trained with sliding window attention (Mistral) tolerate more aggressive eviction.}
 \label{tab:cross-model-eviction}
 \end{table}
 
