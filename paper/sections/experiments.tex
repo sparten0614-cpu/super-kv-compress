@@ -163,7 +163,7 @@ K=q4\_0, V=FP16 & 3.12x & +2.9\% & K quantization only \\
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/eviction_gradient.pdf}
+    \includegraphics[width=\linewidth]{eviction_gradient.pdf}
     \caption{StreamingLLM eviction gradient across models and context lengths. Cliff position shifts right with larger models and longer contexts. 70B shows no cliff up to 70\% (PPL improves).}
     \label{fig:eviction-gradient}
 \end{figure}
@@ -277,7 +277,7 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/metric_gap_scatter.pdf}
+    \includegraphics[width=\linewidth]{metric_gap_scatter.pdf}
     \caption{The metric gap: PPL vs NIAH under quantization (filled) and eviction (hollow). Quantization configs cluster at NIAH=100\% regardless of PPL change; eviction configs drop below the safety threshold despite neutral or improving PPL.}
     \label{fig:metric-gap}
 \end{figure}
@@ -340,7 +340,7 @@ q4\_0/q4\_0 + 70\% evict & 11.85x & +6.30\% & 60\% & Aggressive \\
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/pareto_frontier.pdf}
+    \includegraphics[width=\linewidth]{pareto_frontier.pdf}
     \caption{Pareto frontier of compression ratio vs PPL change. Color encodes NIAH accuracy (green=100\%, orange=60\%). The q4/q4 transition point (orange ring) marks the boundary between NIAH-safe quantization-only configs and NIAH-limited eviction configs.}
     \label{fig:pareto}
 \end{figure}
