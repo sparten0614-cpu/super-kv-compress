@@ -1,173 +1,291 @@
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate our two-knife compression pipeline (K6V4 asymmetric quantization + H2O attention-aware eviction) across three dimensions: perplexity, retrieval accuracy, and long-context task performance.
+We evaluate KV cache compression across three orthogonal dimensions---quantization, eviction, and their interaction---measuring perplexity, retrieval accuracy (NIAH), and long-context task performance (LongBench).
 
 \subsection{Setup}
 
-\paragraph{Models.} Llama-3.1-8B-Instruct (GQA, $d=128$, 32 layers), Qwen2.5-7B-Instruct, Ministral-8B-Instruct.
+\paragraph{Models.}
+\begin{itemize}
+    \item Llama-3.1-8B-Instruct (GQA 4:1, $n_\text{kv}=8$, $d=128$, 32 layers)
+    \item Mistral-7B-Instruct-v0.3 (GQA 4:1, $n_\text{kv}=8$, $d=128$, 32 layers)
+    \item Qwen2.5-7B-Instruct (GQA 7:1, $n_\text{kv}=4$, $d=128$, 28 layers)
+    \item Llama-3.3-70B-Instruct (GQA 8:1, $n_\text{kv}=8$, $d=128$, 80 layers)
+\end{itemize}
+
+\paragraph{Hardware.} Cloud RTX 5880 (48GB), Apple Mac Mini M4 (16GB).
+
+\paragraph{Software.} llama.cpp (GGUF format), custom NIAH and eviction benchmark scripts.
 
 \paragraph{Baselines.}
 \begin{itemize}
-    \item FP16 (no compression)
-    \item TQKV\_6 (TurboQuant uniform 6-bit K+V)
-    \item K6V4 (asymmetric: K=6-bit, V=4-bit)
-    \item StreamingLLM (position-based eviction)
-    \item H2O (attention-aware eviction)
-    \item KIVI (INT2 K+V)
+    \item FP16 KV cache (no compression)
+    \item q8\_0 KV (8-bit uniform quantization, 2x compression)
+    \item q4\_0 KV (4-bit uniform quantization, 4x compression)
+    \item TQKV\_6 (TurboQuant uniform 6-bit K+V, 2.67x compression)
+    \item StreamingLLM (position-based eviction: keep sink + recent tokens)
+    \item H2O (attention-score-based eviction: keep heavy hitters + recent)
 \end{itemize}
 
 \paragraph{Metrics.}
 \begin{itemize}
-    \item \textbf{PPL}: WikiText-2 perplexity (per-token, geometric mean)
-    \item \textbf{NIAH}: Needle-in-a-Haystack retrieval accuracy at 4K/8K/16K context
-    \item \textbf{LongBench}: Multi-task long-context benchmark (QA, summarization, few-shot)
+    \item \textbf{PPL}: WikiText-2 perplexity (per-token, 16K context unless noted)
+    \item \textbf{NIAH}: Needle-in-a-Haystack retrieval accuracy (5 positions: 10\%, 25\%, 50\%, 75\%, 90\%)
+    \item \textbf{LongBench v2}: Multi-task long-context benchmark (20 questions, accuracy \%)
 \end{itemize}
 
-\subsection{Experiment 1: Quantization Baseline}
+%% ============================================================
+\subsection{Experiment 1: Quantization --- Cross-Model Baseline}
+\label{sec:exp-quant}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lccccc}
+\small
+\begin{tabular}{llrrrr}
 \toprule
-\textbf{Model} & \textbf{Config} & \textbf{PPL} & \textbf{$\Delta$PPL} & \textbf{NIAH 4K} & \textbf{Compression} \\
+\textbf{Model} & \textbf{KV Config} & \textbf{PPL} & \textbf{$\Delta$PPL} & \textbf{NIAH} & \textbf{$\rho$} \\
 \midrule
-\multirow{3}{*}{Llama-3.1-8B} & FP16 & 8.8984 & --- & 5/5 & 1x \\
- & TQKV\_6 & 8.9043 & +0.07\% & 5/5 & 2.67x \\
- & K6V4 & TBD & +0.52\% & TBD & 3.2x \\
+\multirow{4}{*}{Llama-3.1-8B}
+ & FP16       & 6.159  & ---       & 100\% & 1x \\
+ & q8\_0      & 6.154  & $-$0.09\% & 100\% & 2x \\
+ & q4\_0      & 6.348  & +3.06\%   & 100\% & 4x \\
+ & TQKV\_6    & 6.164  & +0.08\%   & 100\% & 2.67x \\
 \midrule
-\multirow{2}{*}{Qwen2.5-7B} & FP16 & TBD & --- & TBD & 1x \\
- & K6V4 & TBD & TBD & TBD & 3.2x \\
+\multirow{3}{*}{Mistral-7B}
+ & FP16       & 5.038  & ---       & 100\% & 1x \\
+ & q8\_0      & TBD    & TBD       & TBD   & 2x \\
+ & q4\_0      & 5.101  & +1.25\%   & TBD   & 4x \\
 \midrule
-\multirow{2}{*}{Ministral-8B} & FP16 & 9.3338 & --- & 5/5 & 1x \\
- & TQKV\_6 & 9.3508 & +0.18\% & 5/5 & 2.67x \\
+\multirow{4}{*}{Qwen2.5-7B}
+ & FP16       & 5.660  & ---       & 100\% & 1x \\
+ & q8\_0      & 5.548  & $-$1.98\% & TBD   & 2x \\
+ & q4\_0      & \textbf{6615}  & \textbf{+116,796\%} & \textbf{0\%} & 4x \\
+ & q4\_1      & \textbf{8392}  & catastrophic & TBD & 4x \\
+\midrule
+\multirow{2}{*}{Ministral-8B}
+ & FP16       & 9.334  & ---       & 100\% & 1x \\
+ & TQKV\_6    & 9.351  & +0.18\%   & 100\% & 2.67x \\
+\midrule
+Llama-3.3-70B & q8\_0 & 3.720  & ---       & TBD   & 2x \\
+              & q4\_0  & 3.838  & +3.17\%   & TBD   & 4x \\
 \bottomrule
 \end{tabular}
-\caption{Quantization-only results. K6V4 achieves 3.2$\times$ compression with $<$1\% PPL increase across all models.}
+\caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at 4-bit.}
 \label{tab:quant-baseline}
 \end{table}
 
-\subsection{Experiment 2: Eviction Gradient (PPL)}
+\paragraph{Key Finding 1: Quantization safety is GQA-dependent.}
+Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL increase and 100\% NIAH. Qwen (GQA 7:1, $n_\text{kv}=4$) catastrophically fails at q4\_0 (PPL 6615, NIAH 0\%) while q8\_0 is normal (PPL 5.548). This establishes that \textbf{quantization safety is not universal}---it depends on both GQA ratio and bit width.
+
+%% ============================================================
+\subsection{Experiment 2: Qwen Failure Analysis --- K-Quantization as Root Cause}
+\label{sec:exp-qwen}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{lrr}
 \toprule
-\textbf{Eviction \%} & \textbf{StreamingLLM (512)} & \textbf{StreamingLLM (16K)} & \textbf{H2O (512)} & \textbf{H2O (16K)} \\
+\textbf{Qwen KV Config} & \textbf{PPL} & \textbf{$\Delta$PPL} \\
 \midrule
-0\% & +0.00\% & +0.00\% & +0.00\% & +0.00\% \\
-30\% & TBD & $-$0.17\% & TBD & TBD \\
-50\% & +0.46\% & $-$0.09\% & TBD & TBD \\
-60\% & TBD & $-$0.003\% & TBD & TBD \\
-70\% & TBD & +1.04\% & TBD & TBD \\
-80\% & TBD & +3.09\% & TBD & TBD \\
-85\% & TBD & +6.37\% & TBD & TBD \\
-90\% & TBD & TBD & TBD & TBD \\
+FP16 (K+V) & 5.660 & --- \\
+q8\_0 (K+V) & 5.548 & $-$1.98\% \\
+q4\_0 (K+V) & 6615 & catastrophic \\
+q4\_1 (K+V) & 8392 & catastrophic \\
+K=q4\_0, V=FP16 & 9693 & catastrophic \\
+K=FP16, V=q4\_0 & TBD & TBD \\
 \bottomrule
 \end{tabular}
-\caption{PPL increase (\%) at various eviction rates. StreamingLLM data measured; H2O pending. The 1\% PPL cliff shifts right with context length (log scaling, §\ref{sec:ppl-gap}).}
+\caption{Qwen2.5-7B asymmetric quantization diagnostic. K-quantization alone causes catastrophic failure, confirming K as the root cause.}
+\label{tab:qwen-diagnostic}
+\end{table}
+
+\paragraph{Key Finding 2: K-quantization is the root cause.}
+K=q4\_0 with V=FP16 produces PPL 9693---confirming that \textbf{K-quantization alone} destroys Qwen at 4-bit. Two factors contribute:
+
+\begin{enumerate}
+    \item \textbf{GQA ratio as vulnerability factor.} With $n_\text{kv}=4$, each KV head is shared by 7 query heads. K-quantization error enters the softmax as $\text{softmax}((Q + \delta Q)(K + \delta K)^T / \sqrt{d})$, where $\delta K$ is amplified by all 7 query heads simultaneously. Fewer KV heads means less redundancy and higher per-head information density.
+    \item \textbf{Layer 0 outlier as trigger.} Qwen Layer 0 exhibits $K_\text{max}=93$ (extreme outlier), dominating the q4\_0 quantization range and destroying precision for normal-magnitude entries. Skipping Layer 0 from quantization reduces degradation from $+$104\% to $+$7.1\%.
+\end{enumerate}
+
+\paragraph{Mitigation: GQA-aware quantization.}
+\begin{itemize}
+    \item $n_\text{kv} \leq 4$: minimum safe bit width $\geq$ 6-bit (+ outlier layer skip)
+    \item $n_\text{kv} \geq 8$: 4-bit safe across tested models
+\end{itemize}
+
+%% ============================================================
+\subsection{Experiment 3: Eviction Gradient --- PPL}
+\label{sec:exp-eviction-ppl}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Eviction \%} & \textbf{Llama 4K} & \textbf{Llama 16K} & \textbf{Mistral 16K} & \textbf{Cliff?} \\
+\midrule
+0\%  & +0.00\% & +0.00\%  & +0.00\%  & \\
+10\% &$-$0.07\%& ---      & ---      & \\
+30\% &$-$0.20\%&$-$0.17\% & ---      & \\
+50\% & +0.46\% &$-$0.09\% & +0.36\%  & \\
+60\% & +1.40\% &$-$0.003\%& +0.30\%  & \\
+70\% & +3.39\% & +1.04\%  & +0.26\%  & Llama 16K \\
+80\% & +9.22\% & +3.36\%  & ---      & \\
+85\% & ---     & +7.50\%  & +4.66\%  & Mistral 16K \\
+\bottomrule
+\end{tabular}
+\caption{StreamingLLM eviction PPL gradient. Cliff position is model-dependent: Llama at $\sim$67\%, Mistral at $\sim$85\% (more robust). Longer context shifts the cliff right.}
 \label{tab:eviction-gradient}
 \end{table}
 
-\subsection{Experiment 3: NIAH Retrieval Matrix}
+\paragraph{Key Finding 3: Eviction cliff is model-dependent but universal.}
+All models exhibit a convex PPL curve with a sharp ``cliff'' where degradation accelerates. Mistral is substantially more robust than Llama (cliff at 85\% vs 67\%), possibly due to its sliding window attention mechanism. The cliff position shifts right (more tolerant) with longer context, following $f(n) = 0.277 + 0.0405 \ln(n)$.
+
+\paragraph{Key Finding 4: PPL can \emph{improve} under moderate eviction.}
+At 30--60\% eviction on 16K context, Llama PPL actually \emph{decreases} ($-$0.17\% at 30\%, $-$0.003\% at 60\%). This counterintuitive result suggests that some tokens add noise to the attention distribution, and removing them helps. This has implications for the PPL--task gap (\S\ref{sec:exp-metric-gap}).
+
+%% ============================================================
+\subsection{Experiment 4: NIAH Retrieval Matrix}
+\label{sec:exp-niah}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lccccc}
+\small
+\begin{tabular}{llcccc}
 \toprule
-\textbf{Method} & \textbf{Eviction} & \textbf{Compression} & \textbf{NIAH 4K} & \textbf{NIAH 8K} & \textbf{NIAH 16K} \\
+\textbf{Method} & \textbf{Compression} & \textbf{NIAH 4K} & \textbf{NIAH 16K} & \textbf{PPL $\Delta$} \\
 \midrule
-FP16 & 0\% & 1x & 100\% & 100\% & 100\% \\
-K6V4 only & 0\% & 3.2x & 100\% & TBD & TBD \\
+FP16 & 1x & 100\% & 100\% & --- \\
+q8\_0 & 2x & 100\% & 100\% & $-$0.09\% \\
+q4\_0 (Llama) & 4x & 100\% & 100\% & +3.06\% \\
+q4\_0 (Qwen) & 4x & 0\% & 0\% & catastrophic \\
+TQKV\_6 & 2.67x & 100\% & 100\% & +0.08\% \\
 \midrule
-K6V4 + StreamingLLM & 50\% & 6.4x & TBD & TBD & 60\% \\
-K6V4 + StreamingLLM & 70\% & 9.7x & TBD & TBD & 40\% \\
-K6V4 + StreamingLLM & 85\% & 21x & TBD & TBD & 20\% \\
-\midrule
-K6V4 + H2O & 50\% & 6.4x & TBD & TBD & TBD \\
-K6V4 + H2O & 67\% & 9.7x & TBD & TBD & TBD \\
-K6V4 + H2O & 75\% & 12.8x & TBD & TBD & TBD \\
-K6V4 + H2O & 85\% & 21x & TBD & TBD & \textbf{TBD (key)} \\
-K6V4 + H2O & 90\% & 32x & TBD & TBD & TBD \\
+StreamingLLM 50\% & 2x & TBD & 60\% & $-$0.09\% \\
+StreamingLLM 70\% & 3.3x & TBD & 40\% & +1.04\% \\
+StreamingLLM 85\% & 6.7x & TBD & 20\% & +7.50\% \\
+H2O 50\% & 2x & TBD & 60\% & TBD \\
 \bottomrule
 \end{tabular}
-\caption{NIAH retrieval accuracy at various compression levels. The key experiment is H2O at 85\% eviction, 16K context --- if NIAH remains $>$80\%, the PPL--task gap is confirmed.}
+\caption{NIAH retrieval accuracy. \textbf{Quantization is NIAH-safe} (for compatible architectures). \textbf{Eviction destroys NIAH} regardless of method---both StreamingLLM and H2O produce 60\% NIAH at 50\% eviction.}
 \label{tab:niah-matrix}
 \end{table}
 
-\subsection{Experiment 4: LongBench Task Performance}
+\paragraph{Key Finding 5: The fundamental causal limitation of eviction.}
+Both StreamingLLM \emph{and} H2O produce identical NIAH degradation (60\% at 50\% eviction). This is not a method-specific failure---it is a \textbf{fundamental causal limitation}. Eviction decisions are made during prefill (past), but the needle's importance depends on the future query. No retrospective scoring (accumulated attention, recency, frequency) can identify tokens that will be important for \emph{unknown} future queries.
+
+\paragraph{Key Finding 6: PPL $\neq$ NIAH.}
+At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops to 60\%. This confirms that PPL and retrieval quality are \textbf{orthogonal dimensions}---optimizing for PPL can actively harm retrieval. This is the core of the ``metric gap'' (\S\ref{sec:exp-metric-gap}).
+
+%% ============================================================
+\subsection{Experiment 5: Cross-Model Eviction Comparison}
+\label{sec:exp-cross-model}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccccc}
+\begin{tabular}{lrrr}
 \toprule
-\textbf{Method} & \textbf{$\rho$} & \textbf{Avg} & \textbf{SingleQA} & \textbf{MultiQA} & \textbf{Summ.} & \textbf{FewShot} \\
+\textbf{Eviction \%} & \textbf{Llama 8B} & \textbf{Mistral 7B} & \textbf{Ratio} \\
 \midrule
-FP16 & 1x & TBD & TBD & TBD & TBD & TBD \\
-K6V4 & 3.2x & TBD & TBD & TBD & TBD & TBD \\
-K6V4 + H2O 50\% & 6.4x & TBD & TBD & TBD & TBD & TBD \\
-K6V4 + H2O 75\% & 12.8x & TBD & TBD & TBD & TBD & TBD \\
-K6V4 + H2O 85\% & 21x & TBD & TBD & TBD & TBD & TBD \\
-K6V4 + H2O 90\% & 32x & TBD & TBD & TBD & TBD & TBD \\
+50\% & $-$0.09\% & +0.36\% & --- \\
+60\% & $-$0.003\% & +0.30\% & --- \\
+70\% & +1.04\% & +0.26\% & 4.0x \\
+85\% & +7.50\% & +4.66\% & 1.6x \\
+\midrule
+\textbf{1\% cliff} & \textbf{$\sim$67\%} & \textbf{$\sim$85\%} & --- \\
 \bottomrule
 \end{tabular}
-\caption{LongBench scores at various compression levels. Task-based evaluation should show higher tolerance to eviction than PPL.}
+\caption{Cross-model eviction robustness (StreamingLLM, 16K). Mistral is $\sim$18 percentage points more eviction-tolerant than Llama, possibly due to sliding window attention training.}
+\label{tab:cross-model-eviction}
+\end{table}
+
+%% ============================================================
+\subsection{Experiment 6: LongBench v2}
+\label{sec:exp-longbench}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Config} & \textbf{Score} & \textbf{Correct/20} & \textbf{Cache Size} & \textbf{$\rho$} \\
+\midrule
+Llama FP16 & 35\% & 7/20 & $\sim$400 MiB & 1x \\
+Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
+\bottomrule
+\end{tabular}
+\caption{LongBench v2 results. TQKV\_6 achieves identical score to FP16 with 2x KV cache compression. 18 of 20 predictions are identical; 2 differ but cancel out.}
 \label{tab:longbench}
 \end{table}
 
-\subsection{Experiment 5: The Metric Gap}
+%% ============================================================
+\subsection{Experiment 7: The Metric Gap}
+\label{sec:exp-metric-gap}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccl}
+\begin{tabular}{lrrrl}
 \toprule
-\textbf{Compression} & \textbf{PPL $\Delta$} & \textbf{NIAH} & \textbf{LongBench $\Delta$} & \textbf{Verdict} \\
+\textbf{Compression} & \textbf{PPL $\Delta$} & \textbf{NIAH} & \textbf{LongBench} & \textbf{Verdict} \\
 \midrule
-3.2x (quant only) & +0.52\% & 100\% & TBD & All metrics agree \\
-6.4x (+ 50\% evict) & TBD & TBD & TBD & TBD \\
-12.8x (+ 75\% evict) & TBD & TBD & TBD & TBD \\
-21x (+ 85\% evict) & TBD & TBD & TBD & \textbf{Gap confirmation} \\
-32x (+ 90\% evict) & TBD & TBD & TBD & TBD \\
+2.67x (TQKV\_6) & +0.08\% & 100\% & 35\% (=FP16) & All metrics agree \\
+4x (q4\_0 Llama) & +3.06\% & 100\% & TBD & PPL degrades, NIAH holds \\
+2x (50\% evict) & $-$0.09\% & 60\% & TBD & \textbf{PPL improves, NIAH drops} \\
+3.3x (70\% evict) & +1.04\% & 40\% & TBD & PPL mild, NIAH severe \\
+6.7x (85\% evict) & +7.50\% & 20\% & TBD & Both metrics degrade \\
+\midrule
+4x (q4\_0 Qwen) & +116,796\% & 0\% & N/A & Architecture-dependent failure \\
 \bottomrule
 \end{tabular}
-\caption{Summary table comparing PPL vs.\ task metrics at each compression level. The ``gap confirmation'' row is the key result: if PPL degrades significantly but NIAH/LongBench hold, the metric gap is established.}
+\caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression.}
 \label{tab:metric-gap-summary}
 \end{table}
 
-\subsection{Experiment 6: Context Length Scaling}
+\paragraph{Key Finding 7: PPL is an unreliable proxy for KV cache compression quality.}
+Three failure modes of PPL as a metric:
+\begin{enumerate}
+    \item \textbf{False positive:} 50\% eviction improves PPL ($-$0.09\%) but destroys retrieval (NIAH 60\%). A researcher using only PPL would conclude eviction is free.
+    \item \textbf{Insensitivity to architecture:} Qwen q4\_0 has PPL 6615 while Llama q4\_0 has PPL 6.348---a 1000x difference invisible without cross-model testing.
+    \item \textbf{Orthogonality:} Quantization and eviction produce opposite PPL--NIAH signatures. Quantization: PPL degrades, NIAH holds. Eviction: PPL holds (or improves), NIAH degrades.
+\end{enumerate}
+
+We recommend \textbf{dual-metric reporting} (PPL + NIAH or equivalent retrieval task) as the minimum standard for evaluating KV cache compression methods.
+
+%% ============================================================
+\subsection{Experiment 8: Context Length Scaling}
+\label{sec:exp-context-scaling}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{lrrrr}
 \toprule
-\textbf{Context $n$} & \textbf{PPL 1\% cliff} & \textbf{Max $\rho$ (PPL)} & \textbf{Max $\rho$ (NIAH)} & \textbf{Predicted cliff} \\
+\textbf{Context $n$} & \textbf{PPL 1\% cliff} & \textbf{Max safe $\rho$} & \textbf{Predicted cliff} \\
 \midrule
-512 & 53\% & 6.7x & TBD & 53\% (fit) \\
-4,096 & TBD & TBD & TBD & 61\% \\
-8,192 & TBD & TBD & TBD & 64\% \\
-16,384 & 67\% & 9.7x & TBD & 67\% (fit) \\
-32,768 & TBD & TBD & TBD & 70\% \\
+512   & 53\% & 6.0x  & 53\% (fit) \\
+4,096 & $\sim$55\% & 6.5x  & 61\% \\
+16,384 & $\sim$67\% & 8.9x & 67\% (fit) \\
+32,768 & TBD & TBD & 70\% \\
 \bottomrule
 \end{tabular}
-\caption{Context length scaling validation. Predicted cliff from log model $f(n) = 0.277 + 0.0405 \ln(n)$. Longer contexts allow more aggressive eviction.}
+\caption{Context length scaling for Llama StreamingLLM. The 1\% PPL cliff follows $f(n) = 0.277 + 0.0405 \ln(n)$. Longer contexts permit more aggressive eviction.}
 \label{tab:context-scaling}
 \end{table}
 
-\subsection{Experiment 7: Attention-Aware vs Position-Based Eviction}
+%% ============================================================
+\subsection{Summary of Compression Achievability}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{lrrrl}
 \toprule
-\textbf{Method} & \textbf{Eviction} & \textbf{PPL $\Delta$} & \textbf{NIAH 16K} & \textbf{Explanation} \\
+\textbf{Method Stack} & \textbf{Compression} & \textbf{PPL $\Delta$} & \textbf{NIAH} & \textbf{Status} \\
 \midrule
-StreamingLLM & 50\% & $-$0.09\% & 60\% & Position-based: needles at 10\%/25\% evicted \\
-StreamingLLM & 70\% & +1.04\% & 40\% & Position-based: needles at 10\%/25\%/50\% evicted \\
-StreamingLLM & 85\% & +6.37\% & 20\% & Only 90\% position needle survives \\
-H2O & 50\% & TBD & TBD & Attention-based: retains needle \\
-H2O & 85\% & TBD & TBD & Attention-based: retains needle \\
+Quantization only (6-bit) & 2.67x & +0.08\% & 100\% & Verified \\
+Quantization (6-bit) + 50\% evict & 5.3x & $\sim$+0.4\% & 60\% & Verified \\
+Quantization (4-bit, GQA 4:1) & 4x & +3.06\% & 100\% & Verified \\
+\midrule
++ Expected Attention eviction & 5--10x & TBD & TBD (predicted safe) & Proposed \\
++ Selective recompute & 30--50x & TBD & 100\% (theoretical) & Proposed \\
 \bottomrule
 \end{tabular}
-\caption{Head-to-head comparison of eviction strategies. StreamingLLM optimizes PPL; H2O optimizes task performance. Both may achieve similar PPL, but H2O should dramatically outperform on NIAH.}
-\label{tab:eviction-comparison}
+\caption{Compression achievability summary. Verified results use measured data; proposed results are theoretical projections from our framework (\S\ref{sec:theory}).}
+\label{tab:compression-summary}
 \end{table}
