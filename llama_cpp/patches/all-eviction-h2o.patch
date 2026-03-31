@@ -411,6 +411,12 @@ index 716a30f..64921b3 100644
 +static h2o_state g_h2o;
 +static int g_h2o_callback_count = 0;
 +
++// Layer filtering for Expected Attention: only collect K/Q from one layer
++// to avoid interleaving k_vecs across layers (which breaks score-to-position mapping)
++static int g_exp_attn_target_layer = -1;    // -1 = auto-detecting
++static int g_exp_attn_max_layer_seen = -1;
++static bool g_exp_attn_layer_detected = false;
++
 +// Expected Attention state — declared here so callback can reference it
 +struct expected_attn_state {
 +    // Q statistics: μ_Q and Σ_Q (from query vectors, NOT key vectors)
@@ -550,8 +556,33 @@ index 716a30f..64921b3 100644
 +        return buf;
 +    };
 +
++    if (is_kcur || is_qcur) {
++        // Parse layer index from tensor name: "Kcur-N" or "Qcur-N"
++        const int layer_idx = atoi(name + 5);
++
++        // Auto-detect number of layers on first pass, then lock to middle layer
++        // This prevents k_vecs from interleaving across layers, which would break
++        // the score-to-position mapping in expected_attn_evict()
++        if (!g_exp_attn_layer_detected) {
++            if (layer_idx <= g_exp_attn_max_layer_seen && g_exp_attn_max_layer_seen > 0) {
++                // Layer index wrapped around — first pass complete
++                int n_layers = g_exp_attn_max_layer_seen + 1;
++                g_exp_attn_target_layer = n_layers / 2;
++                g_exp_attn_layer_detected = true;
++                LOG_INF("ExpAttn: auto-detected %d layers, using layer %d for K/Q scoring\n",
++                        n_layers, g_exp_attn_target_layer);
++            }
++            g_exp_attn_max_layer_seen = std::max(g_exp_attn_max_layer_seen, layer_idx);
++            // Skip storing during auto-detection (first eval batch)
++            return true;
++        }
++
++        // Only collect from target layer — ensures k_vecs[i] == position i
++        if (layer_idx != g_exp_attn_target_layer) return true;
++    }
++
 +    if (is_kcur) {
-+        // Store K vectors for per-position scoring
++        // Store K vectors for per-position scoring (single layer only)
 +        // Kcur shape: [head_dim, n_head_kv, n_tokens]
 +        const int head_dim = t->ne[0];
 +        const int n_head_kv = t->ne[1];
@@ -567,26 +598,16 @@ index 716a30f..64921b3 100644
 +    }
 +
 +    if (is_qcur) {
-+        // Accumulate Q vector statistics for Expected Attention
++        // Accumulate Q vector statistics (single layer only, matching K layer)
 +        // Qcur shape: [head_dim, n_head, n_tokens]
-+        // Note: n_head (query heads) may differ from n_head_kv (GQA)
-+        // We average across the GQA group to get per-KV-head Q statistics
 +        const int head_dim = t->ne[0];
 +        const int n_head_q = t->ne[1];
 +        const int n_tokens = t->ne[2];
 +
 +        auto buf = read_to_float(t, head_dim * n_head_q * n_tokens);
 +        if (!buf.empty()) {
-+            // For GQA: average Q across groups to match KV head dimension
-+            // GQA ratio = n_head_q / n_head_kv (e.g., 32/8 = 4)
-+            // Average every `gqa_ratio` Q heads → 1 KV-head-sized vector
-+            // For simplicity in Phase 2: use all Q heads aggregated
-+            // (per-head scoring is Phase 3 optimization)
 +            const int n_embd_q = head_dim * n_head_q;
 +            for (int ti = 0; ti < n_tokens; ti++) {
-+                // Accumulate full Q vector (all heads concatenated)
-+                // The d parameter in expected_attn_state limits to head_dim
-+                // so only the first head_dim elements are used
 +                g_exp_attn.accumulate_queries(buf.data() + ti * n_embd_q, n_embd_q, 1);
 +            }
 +        }
