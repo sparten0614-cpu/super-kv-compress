@@ -1,0 +1,60 @@
+% Expected Attention result narratives — select one after experiment
+% Insert into conclusion.tex, replacing the Expected Attention future work bullet
+
+% ============================================================
+% SCENARIO A: Expected Attention also produces 60% NIAH
+% (Use this if EA does NOT break the NIAH cliff)
+% ============================================================
+
+% For conclusion.tex — replace paragraph 2 (eviction causal limitation):
+%
+% \paragraph{2. The causal limitation is absolute for post-training eviction.}
+% Three fundamentally different scoring strategies --- position-based (StreamingLLM),
+% attention-based (H\textsubscript{2}O), and statistically-predicted (Expected
+% Attention with Gaussian query model) --- all produce identical 60\% NIAH at
+% 50\% eviction. This convergence across independent methods establishes that
+% eviction-based retrieval degradation is a fundamental information-theoretic
+% constraint, not an algorithmic limitation. No post-training scoring function
+% operating at prefill time can preserve retrieval for tokens whose importance
+% depends on unknown future queries. The only escape route is approaches that
+% avoid permanent information loss, such as selective recompute
+% (\S\ref{sec:conclusion}).
+
+% For conclusion.tex — replace the Expected Attention future work bullet:
+%
+% \item \textbf{Selective recompute as the sole path beyond the eviction limit:}
+%   We have shown that three independent eviction scoring strategies converge
+%   on the same NIAH degradation. Selective recompute --- storing all tokens at
+%   ultra-low precision plus token IDs, then recomputing top-$k$ at full precision
+%   on the fly --- is the only post-training approach that can preserve retrieval
+%   while achieving $>$4$\times$ compression, because it avoids permanent
+%   information loss.
+
+
+% ============================================================
+% SCENARIO B: Expected Attention improves NIAH (e.g., 80%+)
+% (Use this if EA breaks the NIAH cliff)
+% ============================================================
+
+% For conclusion.tex — replace paragraph 2:
+%
+% \paragraph{2. The causal limitation is partially solvable via statistical modeling.}
+% While position-based (StreamingLLM) and attention-based (H\textsubscript{2}O)
+% eviction both produce 60\% NIAH at 50\% eviction, Expected Attention
+% --- which models future queries as Gaussian-distributed and computes
+% closed-form expected attention scores --- achieves [X]\% NIAH at the same
+% eviction rate, a [Y]-point improvement. This demonstrates that statistical
+% prediction of future attention can partially resolve the causal limitation,
+% though the improvement is bounded by the Gaussian assumption: queries that
+% deviate significantly from the training distribution (e.g., multi-hop
+% reasoning) may still fail.
+
+% For conclusion.tex — replace the Expected Attention future work bullet:
+%
+% \item \textbf{Expected Attention as NIAH-safe eviction:} Our results show
+%   that Gaussian query modeling achieves [X]\% NIAH at [Y]$\times$ compression,
+%   partially resolving the causal limitation. Future work should investigate
+%   (1) tighter query distribution models (e.g., mixture of Gaussians for
+%   multi-intent contexts), (2) per-head adaptive budgets using query
+%   self-similarity as an allocation signal, and (3) combining Expected
+%   Attention eviction with quantization for multiplicative compression.
