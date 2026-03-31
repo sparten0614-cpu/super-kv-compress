@@ -1,0 +1,119 @@
+\section{The Evaluation Metric Gap}
+\label{sec:metric-gap}
+
+A central finding of this work is that perplexity (PPL) systematically overestimates the quality degradation caused by KV cache eviction, analogous to how PSNR overestimates quality degradation in video compression compared to perceptual metrics. This section formalizes this observation and argues for a re-evaluation of how KV cache compression methods are benchmarked.
+
+\subsection{The Problem with Perplexity}
+
+Perplexity measures a model's average per-token prediction quality:
+\begin{equation}
+    \text{PPL} = \exp\left(\frac{1}{N}\sum_{i=1}^{N} -\log p(x_i | x_{<i})\right)
+\end{equation}
+
+This is a \emph{geometric mean} over per-token probabilities --- every token contributes equally, regardless of its semantic importance. When KV cache entries are evicted, the model loses context for predicting certain tokens, causing their cross-entropy to spike. Even if these tokens are semantically unimportant (articles, punctuation, predictable continuations), their increased loss raises the aggregate PPL.
+
+\paragraph{Why eviction disproportionately affects PPL.}
+Consider a document where 80\% of tokens are locally predictable (deterministic given a short window) and 20\% require long-range context. Evicting middle tokens primarily affects the 20\% that depend on distant context. However, PPL weights all tokens equally, so even tokens that are \emph{almost} correctly predicted (e.g., $p$ drops from 0.95 to 0.85) contribute to PPL degradation. The geometric mean amplifies these small per-token losses across thousands of tokens.
+
+Formally, for token $i$ with baseline probability $p_i$ and compressed probability $p_i'$:
+\begin{equation}
+    \Delta\text{PPL} \propto \exp\left(\frac{1}{N}\sum_i \log\frac{p_i}{p_i'}\right) = \prod_i \left(\frac{p_i}{p_i'}\right)^{1/N}
+\end{equation}
+
+A 10\% probability drop across 1000 tokens contributes the same PPL increase as a 90\% drop on a single token. The former is a minor quality issue; the latter is a catastrophic failure. PPL cannot distinguish between them.
+
+\subsection{The PSNR--VMAF Analogy}
+
+The video compression community faced an identical problem. PSNR (Peak Signal-to-Noise Ratio) measures pixel-level reconstruction error:
+\begin{equation}
+    \text{PSNR} = 10 \log_{10}\frac{\text{MAX}^2}{\text{MSE}}
+\end{equation}
+
+Like PPL, PSNR weights every pixel equally. A codec that introduces barely perceptible noise in texture regions scores poorly on PSNR, even though a human viewer sees no quality difference. This led to the development of perceptual metrics:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Video} & \textbf{KV Cache} & \textbf{Property} \\
+\midrule
+PSNR & PPL & Per-element, uniform weighting \\
+SSIM & --- & Structural similarity (no KV analog yet) \\
+VMAF & NIAH/LongBench & Task-aware, perceptually relevant \\
+\bottomrule
+\end{tabular}
+\caption{Analogy between video quality metrics and KV cache compression metrics.}
+\label{tab:metric-analogy}
+\end{table}
+
+The shift from PSNR to VMAF allowed video codecs to achieve 2--3$\times$ higher compression at equivalent \emph{perceived} quality, because VMAF ignores distortion in regions that don't affect perception. We observe an analogous effect: task-based metrics (NIAH, LongBench) tolerate significantly more eviction than PPL, because they only evaluate task-relevant outputs.
+
+\subsection{Empirical Evidence}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Config} & \textbf{Eviction} & \textbf{PPL $\Delta$} & \textbf{NIAH Acc.} & \textbf{Verdict} \\
+\midrule
+No compression & 0\% & --- & 100\% & baseline \\
+K6V4 only & 0\% & +0.52\% & 100\% & OK \\
+K6V4 + StreamingLLM & 50\% & +0.46\% & \textcolor{red}{20\%} & PPL OK, task FAIL \\
+K6V4 + StreamingLLM & 85\% & +7.50\% & \textcolor{red}{$\sim$0\%} & both FAIL \\
+K6V4 + H2O & 50\% & TBD & TBD & --- \\
+K6V4 + H2O & 85\% & TBD & TBD & \textbf{key experiment} \\
+\bottomrule
+\end{tabular}
+\caption{PPL vs.\ task metric comparison at various compression levels. StreamingLLM achieves low PPL but catastrophically fails NIAH because it evicts by position, not by importance. H2O results pending.}
+\label{tab:ppl-vs-task}
+\end{table}
+
+The StreamingLLM results already demonstrate the metric gap from the opposite direction: low PPL degradation (+0.46\%) coexists with catastrophic task failure (20\% NIAH). This occurs because:
+\begin{enumerate}
+    \item PPL measures \emph{local} prediction quality --- middle tokens contribute little to predicting the next token in a local window, so evicting them barely affects PPL.
+    \item NIAH measures \emph{global} retrieval --- the needle may reside at any position, so position-based eviction has a high probability of discarding it.
+\end{enumerate}
+
+Attention-aware eviction (H2O) should resolve the NIAH failure while maintaining low PPL, because it retains tokens by importance rather than position. % TODO: fill in H2O results
+
+\subsection{Formalization: Task-Aware Distortion}
+\label{sec:task-distortion}
+
+We formalize the metric gap using the rate-distortion framework from Section~\ref{sec:info-theory}.
+
+\begin{definition}[Task-Aware Distortion]
+For a task with relevant token set $\mathcal{T} \subseteq [N]$ and importance weights $\{w_i\}_{i \in \mathcal{T}}$:
+\begin{equation}
+    D_{\text{task}}(o, \hat{o}) = \sum_{i \in \mathcal{T}} w_i \|o_i - \hat{o}_i\|^2
+\end{equation}
+\end{definition}
+
+Since $|\mathcal{T}| \ll N$ for retrieval and QA tasks, $D_{\text{task}} \leq D_{\text{PPL}}$ for any compression scheme. By the monotonicity of the rate-distortion function:
+\begin{equation}
+    R(D_{\text{task}}) \leq R(D_{\text{PPL}}) \quad \Rightarrow \quad \rho_{\text{task}} \geq \rho_{\text{PPL}}
+\end{equation}
+
+The compression ratio achievable under task evaluation is strictly higher than under PPL evaluation. The gap depends on the \emph{information density} of the task:
+
+\begin{equation}
+    \frac{\rho_{\text{task}}}{\rho_{\text{PPL}}} \approx \frac{N}{|\mathcal{T}|} \cdot \frac{1}{\max_i w_i}
+\end{equation}
+
+For NIAH (1 needle token in $N = 16K$ context): $|\mathcal{T}|/N \approx 1/16000$, but with attention-aware eviction the needle is almost certainly retained, so the effective task distortion is near zero regardless of eviction rate.
+
+\subsection{Implications for the Field}
+
+\paragraph{1. PPL should not be the sole evaluation metric for eviction-based methods.}
+PPL is appropriate for evaluating quantization (which affects all tokens uniformly) but is misleading for eviction (which selectively removes tokens). A method that achieves excellent task performance but poor PPL may be strictly preferable for deployment.
+
+\paragraph{2. The ``compression ratio'' of a method depends on the evaluation metric.}
+Reporting a single compression ratio is incomplete. We advocate reporting compression ratios at matched quality under both PPL and task-based evaluation, analogous to reporting both PSNR and VMAF in video compression.
+
+\paragraph{3. New evaluation protocols are needed.}
+The KV cache compression community would benefit from a standardized evaluation suite that includes:
+\begin{itemize}
+    \item PPL on standard datasets (for comparability with prior work)
+    \item NIAH at multiple context lengths (for retrieval capability)
+    \item LongBench/RULER (for diverse long-context tasks)
+    \item Per-task compression--quality Pareto curves (not single operating points)
+\end{itemize}
