@@ -35,14 +35,15 @@ def fig_metric_gap():
     ]
 
     # Eviction configs — HOLLOW markers
+    # Jitter applied to x≈0 cluster to avoid overlap (SZ feedback)
     evict_configs = [
         (-0.09, 60, 'SL 50%', 'o', '#E53935'),
         (1.04, 40, 'SL 70%', 'o', '#E53935'),
         (7.50, 20, 'SL 85%', 'o', '#E53935'),
-        (0.0, 60, 'H2O 50%', 's', '#E53935'),
-        (0.0, 40, 'EA-1L 50%', '^', '#E53935'),
-        (0.0, 0, 'EA-1L 85%', '^', '#E53935'),
-        (0.0, 0, 'EA-ML 85%', 'v', '#E53935'),
+        (0.3, 60, 'H2O 50%', 's', '#E53935'),
+        (-0.3, 40, 'EA-1L 50%', '^', '#E53935'),
+        (0.3, 0, 'EA-1L 85%', '^', '#E53935'),
+        (-0.3, 0, 'EA-ML 85%', 'v', '#E53935'),
     ]
 
     # Plot quantization — filled
@@ -55,9 +56,9 @@ def fig_metric_gap():
         ax.scatter(ppl, niah, facecolors='none', edgecolors=color,
                    marker=marker, s=90, zorder=5, linewidth=1.5)
 
-    # Safety threshold
-    ax.axhline(y=80, color='#9E9E9E', linestyle='--', alpha=0.6, linewidth=0.8)
-    ax.text(6.5, 82, 'safety threshold', color='#9E9E9E', fontsize=7.5, style='italic')
+    # Safety threshold — thicker + darker for print visibility (SZ feedback)
+    ax.axhline(y=80, color='#616161', linestyle='--', alpha=0.8, linewidth=1.2)
+    ax.text(6.5, 82, 'safety threshold', color='#616161', fontsize=7.5, style='italic')
 
     # Annotate key points
     ax.annotate('SL 50%: PPL improves,\nNIAH drops to 60%', xy=(-0.09, 60),
@@ -143,8 +144,8 @@ def fig_eviction_gradient():
     ax.annotate('~85%', xy=(85, 4.66), xytext=(78, 7.5), fontsize=8, color='#FF7043', fontweight='bold',
                 arrowprops=dict(arrowstyle='->', color='#FF7043', lw=0.8))
 
-    # 70B annotation
-    ax.annotate('70B: no cliff\n(PPL improves)', xy=(70, -0.27), xytext=(72, 2.0), fontsize=7.5,
+    # 70B annotation — repositioned to avoid overlap with 85% annotation (SZ feedback)
+    ax.annotate('70B: no cliff, PPL improves\n(3 data points)', xy=(70, -0.27), xytext=(55, -1.0), fontsize=7.5,
                 color='#66BB6A', style='italic',
                 arrowprops=dict(arrowstyle='->', color='#66BB6A', lw=0.8))
 
@@ -186,10 +187,14 @@ def fig_pareto():
 
     for comp, ppl, niah, label in configs:
         color = niah_colors[niah]
-        size = 180 if niah == 100 else 130
+        size = 220 if niah == 100 else 160  # 20% larger for print (SZ feedback)
         marker = 'o' if niah == 100 else 'X'
         ax.scatter(comp, ppl, c=color, s=size, marker=marker, zorder=5,
                    edgecolors='white', linewidth=0.8)
+        # q4/q4 transition point: add orange ring around green dot (SZ feedback)
+        if label == 'q4/q4':
+            ax.scatter(comp, ppl, facecolors='none', edgecolors='#FF8F00',
+                       s=320, marker='o', zorder=4, linewidth=1.5)
         # Label
         va = 'bottom'
         dx, dy = 0.15, 0.25
