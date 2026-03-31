@@ -58,7 +58,7 @@ def build_prompt(needle, haystack_unit, target_ctx_tokens, needle_position_pct, 
     return prompt_text
 
 
-def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_layers=99, skip_layers=None, evict_mode=None, evict_ratio=None, evict_sink=None, h2o_eviction=False):
+def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_layers=99, skip_layers=None, evict_mode=None, evict_ratio=None, evict_sink=None, h2o_eviction=False, snapkv_eviction=False):
     """Run a single NIAH test and return whether the needle was found."""
 
     # Reserve some tokens for the answer
@@ -96,6 +96,9 @@ def run_niah_test(model_path, ctx_size, cache_type, needle_position_pct, n_gpu_l
 
     if h2o_eviction:
         cmd.append("--h2o-eviction")
+
+    if snapkv_eviction:
+        cmd.append("--snapkv-eviction")
 
     env = os.environ.copy()
     if skip_layers:
@@ -148,6 +151,7 @@ def main():
     parser.add_argument("--evict-ratio", type=float, default=None, help="Eviction ratio (0.0-0.9)")
     parser.add_argument("--evict-sink", type=int, default=None, help="Attention sink tokens")
     parser.add_argument("--h2o-eviction", action="store_true", help="Use H2O attention-aware eviction")
+    parser.add_argument("--snapkv-eviction", action="store_true", help="Use SnapKV one-shot prefill eviction")
     args = parser.parse_args()
 
     positions = [float(p) for p in args.positions.split(",")]
@@ -180,7 +184,7 @@ def main():
             r = run_niah_test(args.model, args.ctx, ct if ct != "f16" else None,
                               pos, args.ngl, args.skip_layers,
                               args.evict_mode, args.evict_ratio, args.evict_sink,
-                              args.h2o_eviction)
+                              args.h2o_eviction, args.snapkv_eviction)
             results[ct].append(r)
             status = "FOUND" if r["found"] else "MISS"
             print(f"{status} — {r['answer'][:80]}")

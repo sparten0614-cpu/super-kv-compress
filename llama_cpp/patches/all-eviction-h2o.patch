@@ -1,8 +1,20 @@
 diff --git a/common/arg.cpp b/common/arg.cpp
-index ece116e..84bc49d 100644
+index ece116e..2048a75 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
-@@ -2093,6 +2093,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -387,6 +387,11 @@ const std::vector<ggml_type> kv_cache_types = {
+     GGML_TYPE_IQ4_NL,
+     GGML_TYPE_Q5_0,
+     GGML_TYPE_Q5_1,
++    GGML_TYPE_Q2_K,
++    GGML_TYPE_Q3_K,
++    GGML_TYPE_Q4_K,
++    GGML_TYPE_Q5_K,
++    GGML_TYPE_Q6_K,
+     GGML_TYPE_TQKV_2,
+     GGML_TYPE_TQKV_4,
+     GGML_TYPE_TQKV_4Q,
+@@ -2093,6 +2098,50 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
              params.ppl_output_type = value;
          }
      ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
@@ -34,14 +46,68 @@ index ece116e..84bc49d 100644
 +            params.h2o_eviction = true;
 +        }
 +    ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--kv-type-map"}, "MAP",
++        "Per-layer KV cache type map. Format: \"layer:type,...\" or \"start-end:type,...\"\n"
++        "Example: \"0:q8_0,1-30:q4_0,31:q8_0\" (first/last layer q8_0, rest q4_0)\n"
++        "Overrides --cache-type-k/v for specified layers",
++        [](common_params & params, const std::string & value) {
++            params.kv_type_map = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--snapkv-eviction"},
++        "SnapKV one-shot eviction after prefill (requires --evict-ratio and --h2o-eviction for scoring)",
++        [](common_params & params) {
++            params.snapkv_eviction = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
      add_opt(common_arg(
          {"-dt", "--defrag-thold"}, "N",
          string_format("KV cache defragmentation threshold (DEPRECATED)"),
+diff --git a/common/common.cpp b/common/common.cpp
+index a9bd494..e51755f 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -4,6 +4,9 @@
+ #include "common.h"
+ #include "log.h"
+ #include "llama.h"
++
++// TurboQuant auto-calibration (defined in src/llama-tqkv.cpp)
++extern int tqkv_auto_calibrate(struct llama_model * model, int n_tokens);
+ #include "sampling.h"
+ #include "unicode.h"
+ 
+@@ -1225,6 +1228,11 @@ common_init_result::common_init_result(common_params & params) :
+         cparams.n_samplers = pimpl->samplers_seq_config.size();
+     }
+ 
++    // TurboQuant auto-calibration: disabled for now (memory issues with large models)
++    // Use TQKV_SKIP_LAYERS env var for manual layer skipping
++    // TODO: re-enable when calibration memory management is fixed
++    (void)tqkv_auto_calibrate; // suppress unused warning
++
+     llama_context * lctx = llama_init_from_model(model, cparams);
+     if (lctx == NULL) {
+         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
+@@ -1471,6 +1479,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+     cparams.type_k = params.cache_type_k;
+     cparams.type_v = params.cache_type_v;
+ 
++    // Set KV_TYPE_MAP env var from CLI flag (read by llama-kv-cache.cpp)
++    if (!params.kv_type_map.empty()) {
++        setenv("KV_TYPE_MAP", params.kv_type_map.c_str(), 1);
++    }
++
+     return cparams;
+ }
+ 
 diff --git a/common/common.h b/common/common.h
-index 17dc3fb..4053ae5 100644
+index 17dc3fb..df72285 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -497,6 +497,10 @@ struct common_params {
+@@ -497,6 +497,12 @@ struct common_params {
  
      int32_t ppl_stride      = 0;     // stride for perplexity calculations. If left at 0, the pre-existing approach will be used.
      int32_t ppl_output_type = 0;     // = 0 -> ppl output is as usual, = 1 -> ppl output is num_tokens, ppl, one per line
@@ -49,14 +115,191 @@ index 17dc3fb..4053ae5 100644
 +    int     evict_mode      = 0;     // 0 = sliding window (evict oldest), 1 = StreamingLLM (keep first+last, evict middle)
 +    int     evict_sink      = 128;   // number of "attention sink" tokens to always keep at the beginning (mode 1)
 +    bool    h2o_eviction    = false; // use H2O attention-aware eviction (Heavy-Hitter Oracle)
++    std::string kv_type_map;           // per-layer KV type map, e.g. "0:q8_0,1-30:q4_0,31:q8_0"
++    bool    snapkv_eviction = false; // SnapKV one-shot eviction after prefill
                                       //                                       (which is more convenient to use for plotting)
                                       //
      bool   hellaswag        = false; // compute HellaSwag score over random tasks from datafile supplied in prompt
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 71c34db..eb0e087 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-kv-cache.h"
+ #include "llama-tqkv.h"
++#include "ggml-backend.h"
+ 
+ #include "llama-impl.h"
+ #include "llama-io.h"
+@@ -12,6 +13,75 @@
+ #include <cstring>
+ #include <limits>
+ #include <map>
++#include <sstream>
++
++// ============================================================================
++// Per-layer KV type map: parse "0:q8_0,1-30:q4_0,31:q8_0" format
++// ============================================================================
++static std::map<int, ggml_type> g_kv_type_map;
++static bool g_kv_type_map_parsed = false;
++
++static ggml_type kv_type_from_name(const std::string & name) {
++    for (int t = 0; t < GGML_TYPE_COUNT; t++) {
++        if (ggml_type_name((ggml_type)t) && name == ggml_type_name((ggml_type)t)) {
++            return (ggml_type)t;
++        }
++    }
++    return GGML_TYPE_COUNT;  // invalid
++}
++
++static void parse_kv_type_map() {
++    if (g_kv_type_map_parsed) return;
++    g_kv_type_map_parsed = true;
++
++    const char * env = getenv("KV_TYPE_MAP");
++    if (!env || !env[0]) return;
++
++    std::string map_str(env);
++    std::istringstream ss(map_str);
++    std::string entry;
++
++    while (std::getline(ss, entry, ',')) {
++        // Parse "layer:type" or "start-end:type"
++        auto colon = entry.find(':');
++        if (colon == std::string::npos) continue;
++
++        std::string range = entry.substr(0, colon);
++        std::string type_name = entry.substr(colon + 1);
++        ggml_type type = kv_type_from_name(type_name);
++        if (type == GGML_TYPE_COUNT) {
++            LLAMA_LOG_WARN("%s: unknown type '%s' in KV_TYPE_MAP\n", __func__, type_name.c_str());
++            continue;
++        }
++
++        auto dash = range.find('-');
++        if (dash == std::string::npos) {
++            // Single layer
++            int layer = std::stoi(range);
++            g_kv_type_map[layer] = type;
++        } else {
++            // Range
++            int start = std::stoi(range.substr(0, dash));
++            int end   = std::stoi(range.substr(dash + 1));
++            for (int i = start; i <= end; i++) {
++                g_kv_type_map[i] = type;
++            }
++        }
++    }
++
++    if (!g_kv_type_map.empty()) {
++        LLAMA_LOG_INFO("%s: KV_TYPE_MAP: %zu layer overrides\n", __func__, g_kv_type_map.size());
++    }
++}
++
++static ggml_type get_layer_kv_type(int il, ggml_type default_type) {
++    parse_kv_type_map();
++    auto it = g_kv_type_map.find(il);
++    if (it != g_kv_type_map.end()) {
++        return it->second;
++    }
++    return default_type;
++}
+ #include <stdexcept>
+ 
+ //
+@@ -136,9 +206,9 @@ llama_kv_cache::llama_kv_cache(
+         const bool has_k = true;
+         const bool has_v = !is_mla;
+ 
+-        // Per-layer type override: skip layers use F16 instead of quantized type
+-        ggml_type layer_type_k = tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_k;
+-        ggml_type layer_type_v = tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_v;
++        // Per-layer type override: KV_TYPE_MAP env var, then TQKV_SKIP_LAYERS fallback
++        ggml_type layer_type_k = get_layer_kv_type(il, tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_k);
++        ggml_type layer_type_v = get_layer_kv_type(il, tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_v);
+ 
+         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+@@ -181,7 +251,9 @@ llama_kv_cache::llama_kv_cache(
+         while (pos < s.size()) {
+             size_t comma = s.find(',', pos);
+             if (comma == std::string::npos) comma = s.size();
+-            int layer = std::stoi(s.substr(pos, comma - pos));
++            std::string tok = s.substr(pos, comma - pos);
++            int layer = -1;
++            try { layer = std::stoi(tok); } catch (...) {}
+             if (layer >= 0 && layer < TQKV_MAX_LAYERS && layer < (int)hparams.n_layer) {
+                 tqkv_set_skip_layer(layer, true);
+                 LLAMA_LOG_INFO("%s: TQKV skip layer %d (F16 fallback)\n", __func__, layer);
+@@ -2367,3 +2439,63 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
+ void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+     kv->set_input_pos_bucket(dst, ubatch);
+ }
++
++// Read K max abs values from KV cache (F16 type expected for calibration)
++void llama_kv_cache::read_k_max(float * k_max_out, int n_layer, int n_tokens) const {
++    LLAMA_LOG_INFO("[TQKV read_k_max] layers=%zu, n_layer=%d, n_tokens=%d\n",
++                   layers.size(), n_layer, n_tokens);
++    for (int il = 0; il < n_layer && il < (int)layers.size(); il++) {
++        ggml_tensor * k = layers[il].k;
++        if (!k) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer %d: k is null\n", il);
++            k_max_out[il] = 0.0f;
++            continue;
++        }
++        if (k->type != GGML_TYPE_F16) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer %d: type=%d (not F16=%d)\n", il, k->type, GGML_TYPE_F16);
++            k_max_out[il] = 0.0f;
++            continue;
++        }
++
++        const int64_t n_embd = k->ne[0];
++        const size_t row_bytes = n_embd * ggml_type_size(GGML_TYPE_F16);
++        std::vector<uint16_t> row_buf(n_embd);
++
++        float layer_max = 0.0f;
++        int rows_to_read = std::min((int64_t)n_tokens, k->ne[1]);
++        if (il == 0) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer 0: ne[0]=%lld ne[1]=%lld type=%d rows=%d row_bytes=%zu data=%p buffer=%p\n",
++                           (long long)n_embd, (long long)k->ne[1], k->type, rows_to_read, row_bytes,
++                           (void*)k->data, (void*)k->buffer);
++        }
++        for (int t = 0; t < rows_to_read; t++) {
++            // Use direct memory access (Apple Silicon unified memory)
++            // ggml_backend_tensor_get might not sync Metal buffers correctly
++            memcpy(row_buf.data(), (const char *)k->data + t * row_bytes, row_bytes);
++            for (int64_t j = 0; j < n_embd; j++) {
++                float val = ggml_fp16_to_fp32(row_buf[j]);
++                float av = fabsf(val);
++                if (av > layer_max) layer_max = av;
++            }
++        }
++        if (il == 0) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer 0: max=%.4f, first5: %.4f %.4f %.4f %.4f %.4f\n",
++                           layer_max,
++                           rows_to_read > 0 ? ggml_fp16_to_fp32(row_buf[0]) : 0.0f,
++                           n_embd > 1 ? ggml_fp16_to_fp32(row_buf[1]) : 0.0f,
++                           n_embd > 2 ? ggml_fp16_to_fp32(row_buf[2]) : 0.0f,
++                           n_embd > 3 ? ggml_fp16_to_fp32(row_buf[3]) : 0.0f,
++                           n_embd > 4 ? ggml_fp16_to_fp32(row_buf[4]) : 0.0f);
++        }
++        k_max_out[il] = layer_max;
++    }
++}
++
++// Free function wrapper for tqkv_read_k_max
++void tqkv_read_k_max(struct llama_context * ctx, float * k_max_out, int n_layer, int n_tokens) {
++    llama_memory_t mem = llama_get_memory(ctx);
++    auto * kv = dynamic_cast<llama_kv_cache *>(mem);
++    if (kv) {
++        kv->read_k_max(k_max_out, n_layer, n_tokens);
++    }
++}
 diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
-index 716a30f..cdd3941 100644
+index 716a30f..4e8763b 100644
 --- a/tools/completion/completion.cpp
 +++ b/tools/completion/completion.cpp
-@@ -32,6 +32,136 @@
+@@ -32,6 +32,190 @@
  #pragma warning(disable: 4244 4267) // possible loss of data
  #endif
  
@@ -157,6 +400,7 @@ index 716a30f..cdd3941 100644
 +};
 +
 +static h2o_state g_h2o;
++static int g_h2o_callback_count = 0;  // debug: count callback invocations
 +
 +// Eval callback: intercepts tensors during graph execution
 +static bool h2o_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
@@ -180,6 +424,13 @@ index 716a30f..cdd3941 100644
 +    const int n_tokens = t->ne[1];
 +    const int n_head   = t->ne[2];
 +
++    // Debug: log first few callback invocations
++    g_h2o_callback_count++;
++    if (g_h2o_callback_count <= 5 || g_h2o_callback_count % 100 == 0) {
++        LOG_INF("H2O callback #%d: tensor=%s shape=[%d,%d,%d] type=%d\n",
++                g_h2o_callback_count, name, n_kv, n_tokens, n_head, (int)t->type);
++    }
++
 +    // Read data (may need to copy from GPU)
 +    const size_t data_size = ggml_nbytes(t);
 +    std::vector<float> buf(data_size / sizeof(float));
@@ -190,13 +441,65 @@ index 716a30f..cdd3941 100644
 +    return true;
 +}
 +
++// ============================================================================
++// SnapKV: One-shot eviction after prefill using accumulated attention scores
++// ============================================================================
++static bool g_snapkv_fired = false;
++
++static void snapkv_evict(llama_memory_t mem, const common_params & params, int & n_past) {
++    if (!g_h2o.enabled || g_snapkv_fired || n_past <= 0) return;
++    g_snapkv_fired = true;
++
++    const int budget = std::max(1, (int)(n_past * (1.0f - params.evict_ratio)));
++    const int n_sink = std::min(params.evict_sink, budget / 2);
++    const int n_evict = n_past - budget;
++
++    if (n_evict <= 0) {
++        LOG_INF("SnapKV: no eviction needed (n_past=%d <= budget=%d)\n", n_past, budget);
++        return;
++    }
++
++    // Print score stats before eviction
++    double min_s = 1e30, max_s = -1e30;
++    int nonzero = 0;
++    for (int i = 0; i < n_past; i++) {
++        if (g_h2o.scores[i] < min_s) min_s = g_h2o.scores[i];
++        if (g_h2o.scores[i] > max_s) max_s = g_h2o.scores[i];
++        if (g_h2o.scores[i] > 0) nonzero++;
++    }
++    LOG_INF("SnapKV: evicting %d tokens (keeping %d/%d, sink=%d, callbacks=%d, "
++            "scores: min=%.2f max=%.2f nonzero=%d/%d)\n",
++            n_evict, budget, n_past, n_sink, g_h2o_callback_count,
++            min_s, max_s, nonzero, n_past);
++
++    // Use H2O accumulated scores for eviction
++    auto victims = g_h2o.batch_evict(n_past, n_sink, n_evict);
++
++    // Remove from KV cache back-to-front
++    int remaining = n_past;
++    for (int i = (int)victims.size() - 1; i >= 0; i--) {
++        llama_memory_seq_rm(mem, 0, victims[i], victims[i] + 1);
++        llama_memory_seq_add(mem, 0, victims[i] + 1, remaining, -1);
++        remaining--;
++    }
++    n_past = remaining;
++
++    LOG_INF("SnapKV: done, evicted %d tokens, n_past=%d\n", (int)victims.size(), n_past);
++}
++
  static llama_context           ** g_ctx;
  static llama_model             ** g_model;
  static common_sampler          ** g_smpl;
-@@ -94,6 +224,21 @@ int main(int argc, char ** argv) {
+@@ -94,6 +278,27 @@ int main(int argc, char ** argv) {
          return 1;
      }
  
++    // SnapKV requires H2O scoring (for attention score accumulation during prefill)
++    if (params.snapkv_eviction && !params.h2o_eviction) {
++        LOG_INF("%s: SnapKV auto-enabling H2O scoring for prefill attention tracking\n", __func__);
++        params.h2o_eviction = true;
++    }
++
 +    // H2O: set eval callback and force non-flash attention
 +    if (params.h2o_eviction) {
 +        if (params.evict_ratio <= 0.0f) {
@@ -215,7 +518,7 @@ index 716a30f..cdd3941 100644
      common_init();
  
      auto & sparams = params.sampling;
-@@ -162,6 +307,16 @@ int main(int argc, char ** argv) {
+@@ -162,6 +367,16 @@ int main(int argc, char ** argv) {
      llama_memory_t mem = llama_get_memory(ctx);
      const llama_vocab * vocab = llama_model_get_vocab(model);
  
@@ -232,7 +535,7 @@ index 716a30f..cdd3941 100644
      // note: the time for chat template initialization is not negligible:
      auto chat_templates = common_chat_templates_init(model, params.chat_template);
  
-@@ -620,27 +775,83 @@ int main(int argc, char ** argv) {
+@@ -620,27 +835,102 @@ int main(int argc, char ** argv) {
                  // - take the n_keep first tokens from the original prompt (via n_past)
                  // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
  
@@ -263,14 +566,38 @@ index 716a30f..cdd3941 100644
 +                        // H2O: batch evict tokens with lowest accumulated attention score
 +                        const int sink = std::min(params.evict_sink, cache_budget / 2);
 +                        const int n_discard = n_past + (int) embd.size() - cache_budget;
-+                        if (n_discard > 0) {
-+                            // Use batch_evict: sorts scores, removes lowest N, updates score array
-+                            // batch_evict returns victims in ascending order and already
-+                            // updates the scores array (removes back-to-front internally)
-+                            auto victims = g_h2o.batch_evict(n_past, sink, n_discard);
 +
-+                            // Remove from KV cache: process back-to-front so earlier
-+                            // positions don't shift before we remove them
++                        // DEBUG: print score statistics before eviction
++                        {
++                            double min_s = 1e30, max_s = -1e30, sum_s = 0;
++                            int nonzero = 0;
++                            for (int i = 0; i < n_past; i++) {
++                                double s = g_h2o.scores[i];
++                                if (s < min_s) min_s = s;
++                                if (s > max_s) max_s = s;
++                                sum_s += s;
++                                if (s > 0) nonzero++;
++                            }
++                            LOG_INF("H2O EVICTION BRANCH: n_past=%d, n_discard=%d, budget=%d, sink=%d, "
++                                    "callbacks=%d, scores: min=%.4f max=%.4f avg=%.4f nonzero=%d/%d\n",
++                                    n_past, n_discard, cache_budget, sink, g_h2o_callback_count,
++                                    min_s, max_s, (n_past > 0 ? sum_s/n_past : 0), nonzero, n_past);
++                        }
+ 
+-                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
+-                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++                        if (n_discard > 0) {
++                            auto victims = g_h2o.batch_evict(n_past, sink, n_discard);
+ 
+-                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
+-                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++                            // DEBUG: print first/last few victim positions and scores
++                            if (!victims.empty()) {
++                                LOG_INF("H2O victims: first=%d last=%d count=%d\n",
++                                        victims.front(), victims.back(), (int)victims.size());
++                            }
+ 
+-                    n_past -= n_discard;
 +                            int remaining = n_past;
 +                            for (int i = (int)victims.size() - 1; i >= 0; i--) {
 +                                const int pos = victims[i];
@@ -279,8 +606,8 @@ index 716a30f..cdd3941 100644
 +                                remaining--;
 +                            }
 +                            n_past = remaining;
-+                            LOG_DBG("H2O batch evicted %d tokens (budget=%d, sink=%d), n_past=%d\n",
-+                                    (int)victims.size(), cache_budget, sink, n_past);
++                            LOG_INF("H2O batch evicted %d tokens, n_past now=%d\n",
++                                    (int)victims.size(), n_past);
 +                        }
 +                    } else if (has_eviction && params.evict_mode == 1) {
 +                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
@@ -309,131 +636,27 @@ index 716a30f..cdd3941 100644
 +                        // Original context shifting
 +                        const int n_left    = n_past - params.n_keep;
 +                        const int n_discard = n_left/2;
- 
--                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
--                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++
 +                        LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
 +                                n_past, n_left, n_ctx, params.n_keep, n_discard);
- 
--                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
--                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++
 +                        llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
 +                        llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
- 
--                    n_past -= n_discard;
++
 +                        n_past -= n_discard;
 +                    }
  
                      LOG_DBG("after swap: n_past = %d\n", n_past);
  
-diff --git a/tools/perplexity/perplexity.cpp b/tools/perplexity/perplexity.cpp
-index 0eb062f..4f4bcb5 100644
---- a/tools/perplexity/perplexity.cpp
-+++ b/tools/perplexity/perplexity.cpp
-@@ -509,11 +509,23 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
-     llama_batch batch = llama_batch_init(std::min(n_batch, n_ctx*n_seq), 0, 1);
+@@ -718,6 +1008,11 @@ int main(int argc, char ** argv) {
  
-     std::vector<float> logits;
--    if (num_batches > 1) {
-+    const bool has_eviction = params.evict_ratio > 0.0f;
-+    if (num_batches > 1 || has_eviction) {
-         logits.reserve(size_t(n_ctx) * n_vocab);
-     }
+         if ((int) embd_inp.size() <= n_consumed && !is_interacting) {
  
-     LOG_INF("%s: calculating perplexity over %d chunks, n_ctx=%d, batch_size=%d, n_seq=%d\n", __func__, n_chunk, n_ctx, n_batch, n_seq);
-+    if (has_eviction) {
-+        const int cache_budget = std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)));
-+        LOG_INF("%s: eviction enabled: ratio=%.1f%%, cache_budget=%d/%d tokens, mode=%s",
-+                __func__, params.evict_ratio * 100.0f, cache_budget, n_ctx,
-+                params.evict_mode == 1 ? "StreamingLLM" : "sliding_window");
-+        if (params.evict_mode == 1) {
-+            LOG_INF(", sink=%d\n", params.evict_sink);
-+        } else {
-+            LOG_INF("\n");
-+        }
-+    }
- 
-     std::vector<std::thread> workers(std::thread::hardware_concurrency() - 1);
- 
-@@ -551,9 +563,60 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
-         // clear the KV cache
-         llama_memory_clear(llama_get_memory(ctx), true);
- 
--        for (int j = 0; j < num_batches; ++j) {
--            const int batch_start = start + j * n_batch;
--            const int batch_size  = std::min(end - batch_start, n_batch);
-+        // When eviction is enabled with n_seq=1, use smaller effective batch size for finer-grained eviction
-+        // With n_seq > 1, sparse indexing prevents fine-grained batching, so keep original batch size
-+        const bool fine_evict = (params.evict_ratio > 0.0f && n_seq == 1);
-+        const int eff_batch = fine_evict ? std::min(n_batch, std::max(64, n_ctx / 8)) : n_batch;
-+        const int eff_num_batches = fine_evict ? (n_ctx + eff_batch - 1) / eff_batch : num_batches;
-+
-+        // Eviction state: track the lowest position still in the KV cache
-+        int evict_frontier = 0;
-+        const int cache_budget = (params.evict_ratio > 0.0f)
-+            ? std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)))
-+            : n_ctx;
-+
-+        for (int j = 0; j < eff_num_batches; ++j) {
-+            const int batch_start = start + j * eff_batch;
-+            const int batch_size  = std::min(end - batch_start, eff_batch);
-+
-+            // Eviction: before decode, evict tokens if cache would exceed budget
-+            if (params.evict_ratio > 0.0f) {
-+                const int total_fed = j * eff_batch;  // total tokens fed so far
-+                const int kv_used = total_fed - evict_frontier;  // actual tokens currently in cache
-+                if (kv_used + batch_size > cache_budget) {
-+                    const int need_to_evict = kv_used + batch_size - cache_budget;
-+                    llama_memory_t mem = llama_get_memory(ctx);
-+
-+                    if (params.evict_mode == 1) {
-+                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
-+                        const int sink = std::min(params.evict_sink, cache_budget / 2);
-+                        // evict_frontier must be >= sink (never evict sink tokens)
-+                        const int evict_start = std::max(evict_frontier, sink);
-+                        const int new_frontier = evict_start + need_to_evict;
-+                        if (new_frontier > evict_start) {
-+                            for (int seq = 0; seq < n_seq_batch; seq++) {
-+                                bool ok = llama_memory_seq_rm(mem, seq, evict_start, new_frontier);
-+                                if (i == 0 && j <= 8) {
-+                                    LOG_INF("%s: StreamingLLM evict batch=%d seq=%d pos=[%d,%d) ok=%d sink=%d kv_used=%d\n",
-+                                            __func__, j, seq, evict_start, new_frontier, (int)ok, sink, kv_used);
-+                                }
-+                            }
-+                            evict_frontier = new_frontier;
-+                        }
-+                    } else {
-+                        // Mode 0: Sliding window — evict oldest tokens
-+                        const int new_frontier = evict_frontier + need_to_evict;
-+                        for (int seq = 0; seq < n_seq_batch; seq++) {
-+                            bool ok = llama_memory_seq_rm(mem, seq, evict_frontier, new_frontier);
-+                            if (i == 0 && j <= 8) {
-+                                LOG_INF("%s: evict batch=%d seq=%d pos=[%d,%d) ok=%d kv_used=%d\n",
-+                                        __func__, j, seq, evict_frontier, new_frontier, (int)ok, kv_used);
-+                            }
-+                        }
-+                        evict_frontier = new_frontier;
-+                    }
-+                }
++            // SnapKV: one-shot eviction after prefill is complete
++            if (params.snapkv_eviction && !g_snapkv_fired) {
++                snapkv_evict(mem, params, n_past);
 +            }
++
+             const llama_token id = common_sampler_sample(smpl, ctx, -1);
  
-             int n_outputs = 0;
- 
-@@ -572,7 +635,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
-                 for (int k = 0; k < batch_size; ++k) {
-                     const int idx = seq*n_ctx + k;
-                     batch.token   [idx]    = tokens[seq_start + k];
--                    batch.pos     [idx]    = j*n_batch + k;
-+                    batch.pos     [idx]    = j*eff_batch + k;
-                     batch.n_seq_id[idx]    = 1;
-                     batch.seq_id  [idx][0] = seq;
-                     batch.logits  [idx]    = batch.pos[idx] >= first ? 1 : 0;
-@@ -590,7 +653,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params &
-                 return {tokens, -1, logit_history, prob_history};
-             }
- 
--            if (num_batches > 1 && n_outputs > 0) {
-+            if (eff_num_batches > 1 && n_outputs > 0) {
-                 const auto * batch_logits = llama_get_logits(ctx);
-                 logits.insert(logits.end(), batch_logits, batch_logits + size_t(n_outputs) * n_vocab);
-             }
+             common_sampler_accept(smpl, id, /* accept_grammar= */ true);
