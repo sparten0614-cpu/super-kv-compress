@@ -1,0 +1,96 @@
+% Evaluation Framework Architecture Diagram
+% Compile standalone: pdflatex evaluation-framework.tex
+% Or include in paper via \input{figures/evaluation-framework}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.8cm,
+    box/.style={draw, rounded corners, minimum width=2.4cm, minimum height=0.8cm, align=center, font=\small},
+    widebox/.style={draw, rounded corners, minimum width=5cm, minimum height=0.8cm, align=center, font=\small},
+    input/.style={box, fill=blue!10},
+    process/.style={box, fill=orange!15},
+    metric/.style={box, fill=green!15},
+    output/.style={box, fill=red!10, thick},
+    arrow/.style={->, >=stealth, thick},
+    dasharrow/.style={->, >=stealth, thick, dashed},
+    label/.style={font=\scriptsize, text=gray},
+]
+
+% === Row 1: Input ===
+\node[input] (model) {LLM\\(GGUF)};
+\node[input, right=2.5cm of model] (calib) {Calibration\\Data};
+
+% === Row 2: Architecture Analysis ===
+\node[process, below=of model] (arch) {Architecture\\Analysis};
+\node[process, below=of calib] (outlier) {Outlier\\Detection};
+
+% Labels
+\node[label, below=-0.1cm of arch] {GQA ratio, $n_\text{kv}$, $d$};
+\node[label, below=-0.1cm of outlier] {$K_\text{max}$ per layer};
+
+% === Row 3: Configuration Generator ===
+\node[widebox, process, below=1.5cm of $(arch)!0.5!(outlier)$] (config) {GQA-Aware Configuration Generator};
+
+% Config outputs (three branches)
+\node[box, fill=yellow!15, below left=1.2cm and 1cm of config] (quant) {Quantization\\K: $b_K$, V: $b_V$};
+\node[box, fill=yellow!15, below=1.2cm of config] (evict) {Eviction\\method, rate};
+\node[box, fill=yellow!15, below right=1.2cm and 1cm of config] (skip) {Layer Skip\\outlier layers};
+
+% === Row 5: Dual Metric Evaluation ===
+\node[metric, below=1.2cm of quant] (ppl) {PPL\\(WikiText-2)};
+\node[metric, below=1.2cm of evict] (niah) {NIAH\\(5 positions)};
+\node[metric, below=1.2cm of skip] (bench) {LongBench\\(20 tasks)};
+
+% === Row 6: Analysis ===
+\node[widebox, output, below=1.2cm of niah] (pareto) {Pareto Analysis: $\max \rho$ s.t. PPL$<$X\%, NIAH$>$Y\%};
+
+% === Arrows ===
+\draw[arrow] (model) -- (arch);
+\draw[arrow] (calib) -- (outlier);
+\draw[arrow] (arch) -- (config);
+\draw[arrow] (outlier) -- (config);
+\draw[arrow] (config) -- (quant);
+\draw[arrow] (config) -- (evict);
+\draw[arrow] (config) -- (skip);
+
+% Config → eval (merge into single compressed KV)
+\draw[arrow] (quant) -- (ppl);
+\draw[arrow] (evict) -- (niah);
+\draw[arrow] (skip) -- (bench);
+
+% Cross connections (all configs feed all metrics)
+\draw[dasharrow, gray] (quant.south) -- ++(0,-0.3) -| (niah.north);
+\draw[dasharrow, gray] (evict.south) -- ++(0,-0.3) -| (ppl.north);
+\draw[dasharrow, gray] (skip.south) -- ++(0,-0.3) -| (niah.north);
+
+% Metrics → Pareto
+\draw[arrow] (ppl) -- (pareto);
+\draw[arrow] (niah) -- (pareto);
+\draw[arrow] (bench) -- (pareto);
+
+% === Annotations ===
+% GQA-aware rule box
+\node[draw, dashed, rounded corners, fill=white, font=\scriptsize, text width=3.5cm, align=left,
+      anchor=west] at ($(config.east)+(0.5,0)$)
+{
+\textbf{GQA-Aware Rules:}\\
+$n_\text{kv} \leq 4$: K$\geq$q8\_0\\
+$n_\text{kv} \geq 8$: K$\geq$q4\_0\\
+K precision $\geq$ V precision
+};
+
+% Metric gap annotation
+\node[draw, dashed, rounded corners, fill=white, font=\scriptsize, text width=3.8cm, align=left,
+      anchor=east] at ($(pareto.west)+(-0.5,0)$)
+{
+\textbf{Metric Gap:}\\
+50\% evict: PPL $\downarrow$0.09\%\\
+\phantom{50\% evict:} NIAH $\downarrow$40pts\\
+$\Rightarrow$ \textbf{dual-metric required}
+};
+
+\end{tikzpicture}
+\caption{Evaluation framework. A new model is first analyzed for GQA ratio and outlier layers, then the GQA-aware configuration generator produces candidate compression settings. Each candidate is evaluated on three metrics; the Pareto analysis selects optimal configurations under user-specified quality constraints. Dashed arrows indicate all configurations are evaluated on all metrics (the solid arrows highlight the primary sensitivity: quantization dominates PPL, eviction dominates NIAH).}
+\label{fig:framework}
+\end{figure}
