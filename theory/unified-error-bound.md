@@ -366,16 +366,42 @@ The safe eviction rate should increase with context length $n$, because middle t
 
 As $n$ grows, more middle tokens fall below $\tau_1$:
 
-| Context $n$ | Middle token avg attention | Predicted safe eviction | Combined $\rho$ (with 3.2x quant) |
-|-------------|---------------------------|-------------------------|-----------------------------------|
-| 512 | ~0.001 | ~50% (2x) | **6.4x** |
-| 4,096 | ~0.00007 | ~75-80% (4-5x) | **13-16x** |
-| 16,384 | ~0.000015 | ~85-90% (7-10x) | **22-32x** |
-| 131,072 | ~0.000002 | ~95%+ (20x) | **64x+** |
+**Original prediction (1/n model)** — INVALIDATED by H-001d data:
 
-**Key implication:** 30x compression may only be achievable at $n \geq 16K$. This is actually the right target — short contexts don't need KV cache compression (memory is not the bottleneck), while long contexts are exactly where KV cache becomes prohibitive.
+| Context $n$ | Predicted safe eviction | Combined $\rho$ |
+|-------------|-------------------------|-----------------|
+| 512 | ~50% | 6.4x |
+| 16K | ~85-90% | 22-32x |
+| 128K | ~95%+ | 64x+ |
 
-**Needs experimental validation:** Run eviction gradient tests at $n = 4096$ and $n = 8192$ to verify the scaling prediction.
+**Actual H-001d results (16K context):**
+
+| Eviction | 16K PPL deviation |
+|----------|-------------------|
+| 50% | -0.03% |
+| 70% | +1.11% |
+| 80% | +3.36% |
+| 85% | +7.50% |
+
+The 1% cliff at 16K is ~67%, not the predicted 85-90%.
+
+**Corrected model (logarithmic fit):** $f(n) = 0.277 + 0.0405 \cdot \ln(n)$
+
+Fitted from: $f(512) = 53\%$, $f(16384) = 67\%$
+
+| Context $n$ | Predicted 1% cliff | Eviction $\times$ | Combined $\rho$ (with 3.2x quant) |
+|-------------|--------------------|--------------------|-----------------------------------|
+| 512 | 53% (2.1x) | **6.7x** | measured |
+| 16,384 | 67% (3.0x) | **9.7x** | measured |
+| 32,768 | 70% (3.3x) | **10.7x** | pending |
+| 65,536 | 73% (3.7x) | **11.8x** | pending |
+| 131,072 | 75% (4.0x) | **12.8x** | pending |
+
+**Why logarithmic, not 1/n:** The 1/n model assumes a fixed number of semantic anchors (~256). In reality, long documents have hierarchical semantic structure — each scale (sentence, paragraph, section) contributes $O(1)$ anchor tokens. The number of "un-evictable" tokens grows as $O(\log n)$, so the safe eviction fraction grows as $1 - O(\log n / n)$, which is much slower than $1 - O(1/n)$.
+
+**Implication:** Under the PPL metric, the compression ceiling is ~13x even at 128K context. 30x is not achievable with quantization + eviction alone under PPL evaluation.
+
+**However:** PPL is the most conservative metric — it penalizes every token prediction equally. Practical tasks (QA, summarization, dialogue) only require recall of key information. Eviction tolerance under task-based metrics (LongBench, NIAH) may be significantly higher. This needs validation (see §9, H-001e).
 
 ---
 
@@ -387,7 +413,8 @@ As $n$ grows, more middle tokens fall below $\tau_1$:
 | H-001: Sliding window | Blind temporal eviction | ❌ Refuted (+163% PPL) |
 | H-001b: StreamingLLM | Sink + recent, evict middle | ✅ Confirmed (50% evict, +0.46%) |
 | H-001c: Eviction gradient | 50-80% eviction rates | ✅ Done (cliff at 53%) |
-| H-001d: Context scaling | Eviction at n=4K, 8K, 16K | ⏳ **Next priority** |
+| H-001d: Context scaling | Eviction at 16K | ✅ Done (cliff at 67%, log scaling) |
+| H-001e: Task-based eval | NIAH/LongBench at 85% evict, 16K | ⏳ **Next priority** |
 | H-002: Selective V=2-bit | Four-tier (6/4/2/evict) | ⏳ Planned |
 | D4: Combined pipeline | Full quant + eviction | ⏳ Planned |
 | Attention profiling | §6 tier fractions at various thresholds | ⏳ Planned |
@@ -420,4 +447,4 @@ The unified error bound provides three key contributions:
 
 The constrained optimization formulation (§7) provides a principled way to tune all parameters, with the attention weight distribution as the key input. The three-tier classification (§6) gives a simple, implementable decision rule for each token.
 
-**Bottom line:** 30x is achievable for long-context inference ($n \geq 16K$) where middle tokens' attention weights are sufficiently diluted. For short contexts ($n \leq 4K$), the practical ceiling is ~6x (3.2x quant × 2x eviction). This is the right trade-off: short contexts don't need compression, long contexts do.
+**Bottom line (revised after H-001d):** Under the PPL metric, the compression ceiling is ~13x at 128K context (log scaling, not 1/n). 30x requires either (a) task-based evaluation where eviction tolerance is higher than PPL suggests, or (b) a fundamentally different compression approach beyond quantization + eviction. Even at ~13x, this would be the best post-training KV cache compression result published (current SOTA: KIVI/GEAR at 6-8x).
