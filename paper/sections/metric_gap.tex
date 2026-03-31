@@ -52,30 +52,30 @@ The shift from PSNR to VMAF allowed video codecs to achieve 2--3$\times$ higher 
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{lrrrrl}
 \toprule
-\textbf{Config} & \textbf{Eviction} & \textbf{PPL $\Delta$} & \textbf{NIAH Acc.} & \textbf{Verdict} \\
+\textbf{Config} & \textbf{$\rho$} & \textbf{PPL $\Delta$} & \textbf{NIAH} & \textbf{Verdict} \\
 \midrule
-No compression & 0\% & --- & 100\% & baseline \\
-K6V4 only & 0\% & +0.52\% & 100\% & OK \\
-K6V4 + StreamingLLM & 50\% & $-$0.09\% & \textcolor{red}{60\%} & PPL perfect, task DEGRADED \\
-K6V4 + StreamingLLM & 70\% & +1.04\% & \textcolor{red}{40\%} & PPL marginal, task FAIL \\
-K6V4 + StreamingLLM & 85\% & +6.37\% & \textcolor{red}{20\%} & both FAIL \\
-K6V4 + H2O & 50\% & TBD & TBD & --- \\
-K6V4 + H2O & 85\% & TBD & TBD & \textbf{key experiment} \\
+FP16 (baseline) & 1x & --- & 100\% & \\
+q8\_0/q4\_0 & 2.46x & +0.07\% & 100\% & Both agree: lossless \\
+q4\_0/q4\_0 & 3.56x & +3.13\% & 100\% & Both agree: moderate \\
+\midrule
+q8\_0/q4\_0 + 50\% evict & 4.92x & +0.97\% & 60\% & PPL good, \textbf{NIAH drops} \\
+q8\_0/q4\_0 + 70\% evict & 8.21x & +3.10\% & 60\% & PPL moderate, \textbf{NIAH same} \\
+q4\_0/q4\_0 + 70\% evict & 11.85x & +6.30\% & 60\% & PPL poor, NIAH unchanged \\
 \bottomrule
 \end{tabular}
-\caption{PPL vs.\ task metric comparison at various compression levels. StreamingLLM achieves low PPL but catastrophically fails NIAH because it evicts by position, not by importance. H2O results pending.}
+\caption{PPL vs.\ NIAH across the Pareto frontier (Llama-3.1-8B, 4K context, Phase 1 automated search). Quantization-only configs show metric agreement. Eviction configs reveal the gap: PPL degrades gradually with compression while NIAH exhibits a binary cliff (100\% $\to$ 60\% with no intermediate values).}
 \label{tab:ppl-vs-task}
 \end{table}
 
-The StreamingLLM results already demonstrate the metric gap from the opposite direction: low PPL degradation (+0.46\%) coexists with catastrophic task failure (20\% NIAH). This occurs because:
+The automated search across 27 valid configurations reveals two distinct regimes:
 \begin{enumerate}
-    \item PPL measures \emph{local} prediction quality --- middle tokens contribute little to predicting the next token in a local window, so evicting them barely affects PPL.
-    \item NIAH measures \emph{global} retrieval --- the needle may reside at any position, so position-based eviction has a high probability of discarding it.
+    \item \textbf{Quantization-only} (no eviction): PPL and NIAH agree. Higher quantization increases PPL but NIAH remains 100\%. Both metrics correctly indicate quality.
+    \item \textbf{Eviction-included}: PPL degrades gradually ($+$0.97\% to $+$6.30\%) while NIAH exhibits a \emph{binary cliff} --- every eviction configuration produces exactly 60\% NIAH regardless of eviction rate or quantization level. PPL cannot distinguish between 50\% eviction (mild compression) and 70\% eviction (aggressive compression) in terms of retrieval impact.
 \end{enumerate}
 
-Attention-aware eviction (H2O) should resolve the NIAH failure while maintaining low PPL, because it retains tokens by importance rather than position. % TODO: fill in H2O results
+Critically, both H\textsubscript{2}O (attention-aware) and StreamingLLM (position-based) produce identical 60\% NIAH at 50\% eviction, confirming that the metric gap is \emph{not} an artifact of a poor eviction strategy --- it is an inherent property of the PPL metric itself.
 
 \subsection{Formalization: Task-Aware Distortion}
 \label{sec:task-distortion}
