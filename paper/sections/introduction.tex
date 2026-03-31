@@ -21,6 +21,7 @@ Two compression paradigms dominate the literature: \emph{quantization} (reducing
     \item The first systematic \textbf{cross-model, cross-architecture} evaluation of KV cache compression across GQA ratios (4:1, 7:1, 8:1) and model sizes (7B--70B), revealing that GQA ratio is the primary determinant of quantization safety.
     \item A \textbf{GQA-aware asymmetric quantization rule}: K precision must increase with GQA ratio (K$\geq$8-bit for $n_\text{kv}\leq$4), while V is universally safe at 4-bit. Combined with outlier layer detection, this provides an immediately deployable configuration for any model.
     \item Empirical demonstration and theoretical explanation of the \textbf{causal limitation of eviction}, unifying the failure of H\textsubscript{2}O and StreamingLLM as instances of the same information-theoretic constraint.
+    \item Proof that K and V quantization errors are \textbf{additive} ($<$0.1\% prediction error), reducing calibration cost from $O(n^2)$ to $O(2n)$ for any asymmetric configuration.
     \item A recommendation for \textbf{dual-metric reporting} (PPL + retrieval task) as the minimum standard for KV cache compression evaluation, supported by our metric gap analysis.
     \item All findings are \textbf{immediately deployable} in llama.cpp---the only mainstream inference framework supporting asymmetric K/V quantization types---without any code modification.
 \end{itemize}

@@ -58,7 +58,7 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
 \midrule
 \multirow{4}{*}{Qwen2.5-7B}
  & FP16       & 5.660  & ---       & 100\% & 1x \\
- & q8\_0      & 5.548  & $-$1.98\% & TBD   & 2x \\
+ & q8\_0      & 5.548  & $-$1.98\% & 100\% & 2x \\
  & q4\_0      & \textbf{6615}  & \textbf{+116,796\%} & \textbf{0\%} & 4x \\
  & q4\_1      & \textbf{8392}  & catastrophic & TBD & 4x \\
 \midrule
@@ -185,10 +185,10 @@ q4\_0 (Qwen) & 4x & \textbf{0\%} & \textbf{0\%} & catastrophic \\
 K8V4 (Qwen) & 2.5x & 100\% & 100\% & $-$1.45\% \\
 TQKV\_6 & 2.67x & 100\% & 100\% & +0.08\% \\
 \midrule
-StreamingLLM 50\% & 2x & TBD & 60\% & $-$0.09\% \\
-StreamingLLM 70\% & 3.3x & TBD & 40\% & +1.04\% \\
-StreamingLLM 85\% & 6.7x & TBD & 20\% & +7.50\% \\
-H2O 50\% & 2x & TBD & 60\% & TBD \\
+StreamingLLM 50\% & 2x & --- & 60\% & $-$0.09\% \\
+StreamingLLM 70\% & 3.3x & --- & 40\% & +1.04\% \\
+StreamingLLM 85\% & 6.7x & --- & 20\% & +7.50\% \\
+H2O 50\% & 2x & --- & 60\% & --- \\
 \bottomrule
 \end{tabular}
 \caption{NIAH retrieval accuracy. \textbf{Quantization is NIAH-safe} (for compatible architectures). \textbf{Eviction destroys NIAH} regardless of method---both StreamingLLM and H2O produce 60\% NIAH at 50\% eviction.}

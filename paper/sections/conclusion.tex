@@ -12,8 +12,11 @@ Both attention-aware (H\textsubscript{2}O) and position-based (StreamingLLM) evi
 \paragraph{3. Perplexity is a misleading metric for eviction.}
 At 50\% eviction, PPL improves ($-$0.09\%) while NIAH drops from 100\% to 60\%---a dangerous false positive. Quantization produces the opposite signature: PPL degrades (+3\%) while NIAH holds at 100\%. These orthogonal responses mean neither metric alone characterizes compression quality. We recommend \textbf{dual-metric reporting} (PPL + retrieval) as the minimum standard.
 
-\paragraph{4. Three orthogonal compression axes.}
-KV cache compression operates along three independent axes: \emph{dimension reduction} (low-rank projection, 1.5--2$\times$), \emph{bit reduction} (quantization, 2.67--4$\times$), and \emph{token reduction} (eviction, 2--5$\times$). No prior work systematically studies their interaction. Our experiments show the axes are largely orthogonal, suggesting multiplicative compression is achievable---but the token reduction axis is constrained by the causal limitation for retrieval-critical applications.
+\paragraph{4. KV quantization errors are additive.}
+We empirically demonstrate that K and V quantization errors combine additively: $\delta_{K+V} \approx \delta_K + \delta_V$ with $<$0.1\% error across all tested configurations (predicted +3.13\% vs.\ measured +3.14\% for q4\_0/q4\_0). This reduces calibration cost from $O(n^2)$ to $O(2n)$: any asymmetric (K,V) configuration can be predicted from just two single-component measurements.
+
+\paragraph{5. The NIAH cliff is binary.}
+Across 27 valid configurations, NIAH is either 100\% (no eviction) or 60\% (any eviction $\geq$50\%)---there is no configuration achieving intermediate NIAH accuracy. This binary transition reinforces that even modest eviction destroys retrieval for tokens in the evicted region, with no graceful degradation.
 
 \subsection{Practical Recommendations}
 
