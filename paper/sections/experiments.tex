@@ -264,14 +264,14 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 \midrule
 2.67x (TQKV\_6) & +0.08\% & 100\% & 35\% (=FP16) & All metrics agree \\
 4x (q4\_0 Llama) & +3.06\% & 100\% & TBD & PPL degrades, NIAH holds \\
-2x (50\% evict) & $-$0.09\% & 60\% & TBD & \textbf{PPL improves, NIAH drops} \\
-3.3x (70\% evict) & +1.04\% & 40\% & TBD & PPL mild, NIAH severe \\
-6.7x (85\% evict) & +7.50\% & 20\% & TBD & Both metrics degrade \\
+2x (50\% evict) & $-$0.09\% & 60\% & ---$^*$ & \textbf{PPL improves, NIAH drops} \\
+3.3x (70\% evict) & +1.04\% & 40\% & ---$^*$ & PPL mild, NIAH severe \\
+6.7x (85\% evict) & +7.50\% & 20\% & ---$^*$ & Both metrics degrade \\
 \midrule
 4x (q4\_0 Qwen) & +116,855\% & 0\% & N/A & Architecture-dependent failure \\
 \bottomrule
 \end{tabular}
-\caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression.}
+\caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression. $^*$Eviction + LongBench not evaluated: given NIAH degradation at these rates, task-level degradation is expected and follows from the causal limitation.}
 \label{tab:metric-gap-summary}
 \end{table}
 
