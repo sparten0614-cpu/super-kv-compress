@@ -411,11 +411,12 @@ index 716a30f..64921b3 100644
 +static h2o_state g_h2o;
 +static int g_h2o_callback_count = 0;
 +
-+// Layer filtering for Expected Attention: only collect K/Q from one layer
-+// to avoid interleaving k_vecs across layers (which breaks score-to-position mapping)
-+static int g_exp_attn_target_layer = -1;    // -1 = auto-detecting
++// Layer tracking for Expected Attention: aggregate K vectors across all layers
++// per position (running average) to avoid interleaving bug
++static int g_exp_attn_n_layers = 0;         // auto-detected layer count
 +static int g_exp_attn_max_layer_seen = -1;
 +static bool g_exp_attn_layer_detected = false;
++static int g_exp_attn_pos_offset = 0;       // position offset for current batch
 +
 +// Expected Attention state — declared here so callback can reference it
 +struct expected_attn_state {
@@ -424,8 +425,10 @@ index 716a30f..64921b3 100644
 +    std::vector<double> q_sq_sum;    // [d] running sum of Q^2 for variance
 +    int q_samples = 0;               // number of Q vectors accumulated
 +
-+    // Stored K vectors for per-position scoring
-+    std::vector<std::vector<float>> k_vecs;  // [n_positions][d]
++    // Per-position averaged K vectors (aggregated across all layers)
++    std::vector<std::vector<double>> k_vecs_sum;   // [n_positions][d] running sum
++    std::vector<int>                 k_vecs_count;  // [n_positions] layer count
++    std::vector<std::vector<float>>  k_vecs;        // [n_positions][d] final averaged
 +
 +    int d = 0;                       // head dimension
 +    int n_kv_max = 0;
@@ -437,7 +440,11 @@ index 716a30f..64921b3 100644
 +        q_sum.assign(d, 0.0);
 +        q_sq_sum.assign(d, 0.0);
 +        q_samples = 0;
++        k_vecs_sum.clear();
++        k_vecs_count.clear();
 +        k_vecs.clear();
++        k_vecs_sum.reserve(kv_max);
++        k_vecs_count.reserve(kv_max);
 +        k_vecs.reserve(kv_max);
 +        enabled = true;
 +    }
@@ -456,13 +463,36 @@ index 716a30f..64921b3 100644
 +        }
 +    }
 +
-+    // Store K vectors (from Kcur tensors) for later per-position scoring
-+    void store_keys(const float * k_data, int n_embd, int n_tokens) {
++    // Accumulate K vectors per position (called once per layer per batch)
++    // pos_offset = starting position index for this batch's tokens
++    void accumulate_keys(const float * k_data, int n_embd, int n_tokens, int pos_offset) {
 +        if (!enabled || !k_data) return;
 +        int dim = std::min(n_embd, d);
 +        for (int t = 0; t < n_tokens; t++) {
-+            if ((int)k_vecs.size() < n_kv_max) {
-+                k_vecs.emplace_back(k_data + t * n_embd, k_data + t * n_embd + dim);
++            int pos = pos_offset + t;
++            if (pos >= n_kv_max) break;
++            // Grow storage if needed
++            while ((int)k_vecs_sum.size() <= pos) {
++                k_vecs_sum.emplace_back(d, 0.0);
++                k_vecs_count.push_back(0);
++            }
++            // Accumulate this layer's K vector into the position's running sum
++            const float * kv = k_data + t * n_embd;
++            for (int j = 0; j < dim; j++) {
++                k_vecs_sum[pos][j] += kv[j];
++            }
++            k_vecs_count[pos]++;
++        }
++    }
++
++    // Finalize: compute averaged K vectors from accumulated sums
++    void finalize_k_vecs() {
++        k_vecs.resize(k_vecs_sum.size());
++        for (size_t i = 0; i < k_vecs_sum.size(); i++) {
++            k_vecs[i].resize(d);
++            double inv_count = (k_vecs_count[i] > 0) ? 1.0 / k_vecs_count[i] : 0.0;
++            for (int j = 0; j < d; j++) {
++                k_vecs[i][j] = (float)(k_vecs_sum[i][j] * inv_count);
 +            }
 +        }
 +    }
@@ -560,29 +590,26 @@ index 716a30f..64921b3 100644
 +        // Parse layer index from tensor name: "Kcur-N" or "Qcur-N"
 +        const int layer_idx = atoi(name + 5);
 +
-+        // Auto-detect number of layers on first pass, then lock to middle layer
-+        // This prevents k_vecs from interleaving across layers, which would break
-+        // the score-to-position mapping in expected_attn_evict()
++        // Auto-detect number of layers on first pass
 +        if (!g_exp_attn_layer_detected) {
 +            if (layer_idx <= g_exp_attn_max_layer_seen && g_exp_attn_max_layer_seen > 0) {
 +                // Layer index wrapped around — first pass complete
-+                int n_layers = g_exp_attn_max_layer_seen + 1;
-+                g_exp_attn_target_layer = n_layers / 2;
++                g_exp_attn_n_layers = g_exp_attn_max_layer_seen + 1;
 +                g_exp_attn_layer_detected = true;
-+                LOG_INF("ExpAttn: auto-detected %d layers, using layer %d for K/Q scoring\n",
-+                        n_layers, g_exp_attn_target_layer);
++                LOG_INF("ExpAttn: auto-detected %d layers, using multi-layer K aggregation\n",
++                        g_exp_attn_n_layers);
 +            }
 +            g_exp_attn_max_layer_seen = std::max(g_exp_attn_max_layer_seen, layer_idx);
-+            // Skip storing during auto-detection (first eval batch)
-+            return true;
 +        }
 +
-+        // Only collect from target layer — ensures k_vecs[i] == position i
-+        if (layer_idx != g_exp_attn_target_layer) return true;
++        // Track position offset: when layer 0 appears, a new batch of tokens starts
++        if (is_kcur && layer_idx == 0 && g_exp_attn_layer_detected) {
++            g_exp_attn_pos_offset = (int)g_exp_attn.k_vecs_sum.size();
++        }
 +    }
 +
 +    if (is_kcur) {
-+        // Store K vectors for per-position scoring (single layer only)
++        // Accumulate K vectors per position across all layers
 +        // Kcur shape: [head_dim, n_head_kv, n_tokens]
 +        const int head_dim = t->ne[0];
 +        const int n_head_kv = t->ne[1];
@@ -591,14 +618,12 @@ index 716a30f..64921b3 100644
 +
 +        auto buf = read_to_float(t, head_dim * n_head_kv * n_tokens);
 +        if (!buf.empty()) {
-+            for (int ti = 0; ti < n_tokens; ti++) {
-+                g_exp_attn.store_keys(buf.data() + ti * n_embd_kv, n_embd_kv, 1);
-+            }
++            g_exp_attn.accumulate_keys(buf.data(), n_embd_kv, n_tokens, g_exp_attn_pos_offset);
 +        }
 +    }
 +
 +    if (is_qcur) {
-+        // Accumulate Q vector statistics (single layer only, matching K layer)
++        // Accumulate Q vector statistics across all layers
 +        // Qcur shape: [head_dim, n_head, n_tokens]
 +        const int head_dim = t->ne[0];
 +        const int n_head_q = t->ne[1];
@@ -637,8 +662,11 @@ index 716a30f..64921b3 100644
 +        return;
 +    }
 +
-+    LOG_INF("ExpAttn: scoring with Q stats (q_samples=%d) + K vectors (n_stored=%d), d=%d\n",
-+            g_exp_attn.q_samples, (int)g_exp_attn.k_vecs.size(), g_exp_attn.d);
++    // Finalize multi-layer K aggregation: compute average K per position
++    g_exp_attn.finalize_k_vecs();
++
++    LOG_INF("ExpAttn: scoring with Q stats (q_samples=%d) + K vectors (n_positions=%d, n_layers=%d), d=%d\n",
++            g_exp_attn.q_samples, (int)g_exp_attn.k_vecs.size(), g_exp_attn_n_layers, g_exp_attn.d);
 +
 +    // Phase 2: Pure K-based scoring using stored K vectors + Gaussian query model
 +    if (!g_exp_attn.k_vecs.empty() && (int)g_exp_attn.k_vecs.size() >= n_past) {
