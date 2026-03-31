@@ -57,11 +57,30 @@ You have access to these compression knobs:
 - evict_method: none, streamingllm, snapkv, h2o, expected_attn
 - skip_layers: comma-separated layer indices to keep at F16 (e.g. "0" or "0,31")
 
-Key findings so far:
-- K is more sensitive to quantization than V (especially Qwen models)
-- Layer 0 often has extreme outliers — skipping it helps
-- StreamingLLM eviction is position-based (bad for NIAH at >50%)
+VERIFIED FINDINGS (experimentally confirmed):
+- q4_0 = 3.56x compression, NIAH 100%, PPL +1-3% (Llama-8B/Mistral-7B/Llama-70B)
+- q8_0 = 1.88x, NIAH 100%, PPL ~0%
+- K is MORE sensitive to quantization than V (Qwen K=q4_0 crashes PPL=6615, V=q4_0 is fine)
+- Layer 0 has extreme outliers (K_max=93 on Qwen) — skip_layers="0" fixes +104%→+7.1%
+- Asymmetric K=q8_0/V=q4_0 works well for Qwen (PPL=5.58, normal)
+- Longer context = more eviction-tolerant (16K: 50% eviction is lossless, 70% = +1.1%)
 - NIAH = needle-in-a-haystack retrieval test (100% = perfect recall)
+
+DEAD ENDS (DO NOT explore these):
+- QJL (Quantized Johnson-Lindenstrauss): random projection adds variance, softmax amplifies noise → HARMFUL
+- H2O attention-aware eviction: cumulative softmax scores don't predict future query relevance → same NIAH as StreamingLLM
+- StreamingLLM eviction >50%: position-based eviction destroys NIAH (50%→60% NIAH, 85%→20% NIAH)
+- KVTC: storage-only compression, not runtime memory — irrelevant for our goal
+- RocketKV "400x": token selection ratio, not memory compression (real saving = 32.6%)
+- Delta encoding between KV layers: tested, not viable for compression
+- q2_K as uniform KV type: too aggressive, PPL >20% degradation
+
+PROMISING DIRECTIONS (based on theory + partial evidence):
+- Asymmetric K/V: K at higher precision (q8_0), V at lower (q4_0 or q4_1)
+- Per-layer optimization: outlier layers at q8_0, safe middle layers at q4_0
+- Combining quantization + mild eviction (≤50%) for multiplicative compression
+- skip_layers on models with known outliers (layer 0 for Qwen-family)
+- q5_1 or q5_0 as middle ground between q8_0 and q4_0
 
 Your task: analyze the current results and propose ONE new experiment that is
 likely to improve the Pareto frontier. Return your proposal as JSON:
@@ -75,9 +94,9 @@ likely to improve the Pareto frontier. Return your proposal as JSON:
   "reasoning": "brief explanation of why this config might be interesting"
 }
 
-Be creative — don't just try nearby points. Think about asymmetric configs,
-layer-specific optimization, combining quantization with eviction, etc.
-If all obvious configs have been tried, suggest a novel direction."""
+Be creative but AVOID dead ends listed above. Focus on combinations and
+asymmetric configs that haven't been tried. If suggesting eviction, keep
+ratio ≤50% for NIAH safety or explain why higher might work."""
 
 # ============================================================================
 # Agent Core
