@@ -19,7 +19,7 @@ All experiment data in a single source of truth for paper writing.
 | Mistral-7B | 4:1 | q4_0 | q4_0 | 4x | 5.101 | +1.25% | 100% | Safe |
 | Qwen2.5-7B | 7:1 | FP16 | FP16 | 1x | 5.660 | — | 100% | Baseline |
 | Qwen2.5-7B | 7:1 | q8_0 | q8_0 | 2x | 5.548 | -1.98% | 100% | Safe |
-| Qwen2.5-7B | 7:1 | q4_0 | q4_0 | 4x | 6615 | +116,796% | 0% | CATASTROPHIC |
+| Qwen2.5-7B | 7:1 | q4_0 | q4_0 | 4x | 6616 | +116,855% | 0% | CATASTROPHIC |
 | Qwen2.5-7B | 7:1 | q8_0 | q4_0 | 2.5x | 5.578 | -1.45% | 100% | Optimal for Qwen |
 | Ministral-8B | 4:1 | FP16 | FP16 | 1x | 9.334 | — | 100% | Baseline |
 | Ministral-8B | 4:1 | TQKV_6 | TQKV_6 | 2.67x | 9.351 | +0.18% | 100% | Safe |
@@ -70,7 +70,7 @@ All experiment data in a single source of truth for paper writing.
 
 | Eviction % | Llama-8B | Mistral-7B | Llama-70B |
 |------------|----------|------------|-----------|
-| 0% | 0% | 0% | 0% |
+| 0% (baseline) | 0% | 0% | 0% |
 | 50% | -0.09% | +0.36% | -0.32% |
 | 67% | ~+1% | — | — |
 | 70% | +1.04% | +0.26% | -0.27% |
@@ -116,7 +116,7 @@ All experiment data in a single source of truth for paper writing.
 | StreamingLLM 50% | 2x | **-0.09%** | **60%** | **NO — PPL improves, NIAH drops!** |
 | StreamingLLM 70% | 3.3x | +1.04% | 40% | Partial — PPL mild, NIAH severe |
 | StreamingLLM 85% | 6.7x | +7.50% | 20% | YES — both degrade |
-| Qwen q4_0 | 4x | +116,796% | 0% | YES — both catastrophic |
+| Qwen q4_0 | 4x | +116,855% | 0% | YES — both catastrophic |
 
 **The Metric Gap:** At 50% eviction, PPL improves while NIAH drops 40%. A researcher using PPL alone would conclude eviction is beneficial. This is the paper's core message for dual-metric evaluation.
 
@@ -127,11 +127,11 @@ All experiment data in a single source of truth for paper writing.
 | 1 | q8_0/q8_0 | 1.88x | -0.08% | 100% | Lossless |
 | 2 | q8_0/q4_0 | 2.46x | +0.07% | 100% | SWEET SPOT |
 | 3 | q4_0/q4_0 | 3.56x | +3.13% | 100% | Moderate |
-| 4 | q8_0/q4_0 + 50% evict | 4.92x | +0.97% | 60% | NIAH-limited |
-| 5 | q8_0/q4_0 + 70% evict | 8.21x | +3.10% | 60% | NIAH-limited |
-| 6 | q4_0/q4_0 + 70% evict | 11.85x | +6.30% | 60% | Aggressive |
+| 4 | q8_0/q4_0 + 50% evict | 4.92x | +0.97% | 60% | NIAH-limited (4K) |
+| 5 | q8_0/q4_0 + 70% evict | 8.21x | +3.10% | 60% | NIAH-limited (4K); 16K NIAH=40% |
+| 6 | q4_0/q4_0 + 70% evict | 11.85x | +6.30% | 60% | Aggressive (4K); 16K NIAH=40% |
 
-**Key finding:** NIAH is binary — 100% (no eviction) or 60% (any eviction >= 50%). No middle ground.
+**Note:** NIAH values are from 4K Pareto search. At 16K, 70% eviction NIAH drops to 40% (Table 5). The binary cliff (100% or 60%) holds at 4K; at 16K it's 100%/60%/40%/20% by eviction rate.
 **Additivity enables Pareto prediction:** O(2n) calibration instead of O(n^2) exhaustive search.
 
 ## Table 9: Practical Recommendations
@@ -141,7 +141,7 @@ All experiment data in a single source of truth for paper writing.
 | Safety-first (retrieval-critical) | q8_0/q4_0 | 2.46x | +0.07% | 100% | Best NIAH-safe compression |
 | Balanced | TQKV_6 | 2.67x | +0.08% | 100% | Near-lossless, simple |
 | Max compression (NIAH-safe) | q4_0/q4_0 | 3.56x | +3.13% | 100% | Moderate PPL hit |
-| Max compression (NIAH-tolerant) | q4_0/q4_0 + 50% evict | 7.12x | ~+4% | 60% | 40% retrieval loss |
+| Max compression (NIAH-tolerant) | q4_0/q4_0 + 50% evict | 7.12x | ~+4% | 60% | 40% retrieval loss. Compression = quant_ratio / (1-evict_rate) = 3.56/0.5 |
 | High-GQA models (Qwen) | q8_0/q4_0 + skip_layers=0 | 2.5x | -1.45% | 100% | Must protect K precision |
 
 ## Summary of Key Findings
@@ -154,7 +154,7 @@ All experiment data in a single source of truth for paper writing.
 
 4. **PPL-NIAH Metric Gap:** At 50% eviction, PPL IMPROVES (-0.09%) while NIAH DROPS to 60%. PPL alone is misleading for eviction evaluation.
 
-5. **Eviction is Fundamentally Limited:** Four scoring strategies (StreamingLLM/H2O/ExpAttn-single/ExpAttn-multi) all fail at 85% eviction. The limitation is information-theoretic (causal — can't anticipate future queries at prefill time), not algorithmic.
+5. **Eviction is Fundamentally Limited:** Four scoring strategies (StreamingLLM/H2O/ExpAttn-single/ExpAttn-multi) all fail at 85% eviction. This includes both attention-based (H2O) and attention-proxy (ExpAttn K-statistics) approaches. The limitation is information-theoretic (causal — can't anticipate future queries at prefill time), not algorithmic.
 
 6. **Quantization is the Practical Path:** NIAH-safe compression up to 3.56x (q4_0/q4_0) with no retrieval loss. Per-layer asymmetric (kv-type-map) handles model-specific K sensitivity.
 
