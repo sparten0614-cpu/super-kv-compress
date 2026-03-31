@@ -161,8 +161,15 @@ K=q4\_0, V=FP16 & 3.12x & +2.9\% & K quantization only \\
 \label{tab:eviction-gradient}
 \end{table}
 
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/eviction_gradient.pdf}
+    \caption{StreamingLLM eviction gradient across models and context lengths. Cliff position shifts right with larger models and longer contexts. 70B shows no cliff up to 70\% (PPL improves).}
+    \label{fig:eviction-gradient}
+\end{figure}
+
 \paragraph{Key Finding 3: Eviction cliff scales with model size and context.}
-All models exhibit a convex PPL curve with a ``cliff,'' but its position varies dramatically: Llama-8B at $\sim$67\% (16K), Mistral-7B at $\sim$85\% (16K), and Llama-70B shows \textbf{no cliff up to 70\% eviction at 16K} (PPL improves at both 50\% and 70\%). The same 70B model at 4K context shows +26\% at 50\% eviction---confirming that context length is the dominant factor, not model quality. The cliff shifts right with both longer context ($f(n) = 0.277 + 0.0405 \ln(n)$) and larger model scale.
+All models exhibit a convex PPL curve with a ``cliff'' (Figure~\ref{fig:eviction-gradient}), but its position varies dramatically: Llama-8B at $\sim$67\% (16K), Mistral-7B at $\sim$85\% (16K), and Llama-70B shows \textbf{no cliff up to 70\% eviction at 16K} (PPL improves at both 50\% and 70\%). The same 70B model at 4K context shows +26\% at 50\% eviction---confirming that context length is the dominant factor, not model quality. The cliff shifts right with both longer context ($f(n) = 0.277 + 0.0405 \ln(n)$) and larger model scale.
 
 \paragraph{Key Finding 4: PPL can \emph{improve} under moderate eviction.}
 At 30--70\% eviction on 16K context, both Llama-8B and Llama-70B show PPL \emph{improvement} (up to $-$0.32\% for 70B at 50\%). This counterintuitive result suggests that evicted tokens add noise to the attention distribution; removing them is beneficial for average prediction quality. This is precisely why PPL is misleading for eviction---it rewards compression that harms retrieval (\S\ref{sec:exp-metric-gap}).
@@ -268,8 +275,15 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 \label{tab:metric-gap-summary}
 \end{table}
 
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/metric_gap_scatter.pdf}
+    \caption{The metric gap: PPL vs NIAH under quantization (filled) and eviction (hollow). Quantization configs cluster at NIAH=100\% regardless of PPL change; eviction configs drop below the safety threshold despite neutral or improving PPL.}
+    \label{fig:metric-gap}
+\end{figure}
+
 \paragraph{Key Finding 7: PPL is an unreliable proxy for KV cache compression quality.}
-Three failure modes of PPL as a metric:
+Figure~\ref{fig:metric-gap} visualizes the fundamental disconnect. Three failure modes of PPL as a metric:
 \begin{enumerate}
     \item \textbf{False positive:} 50\% eviction improves PPL ($-$0.09\%) but destroys retrieval (NIAH 60\%). A researcher using only PPL would conclude eviction is free.
     \item \textbf{Insensitivity to architecture:} Qwen q4\_0 has PPL 6616 while Llama q4\_0 has PPL 6.348---a 1000x difference invisible without cross-model testing.
@@ -323,6 +337,13 @@ q4\_0/q4\_0 + 70\% evict & 11.85x & +6.30\% & 60\% & Aggressive \\
 \caption{Pareto frontier from 36-config automated search (Llama-3.1-8B, 4K context). A clear NIAH discontinuity separates the quantization-only region (NIAH=100\%) from the eviction region (NIAH=60\%). The ``sweet spot'' q8\_0/q4\_0 achieves 2.46$\times$ at +0.07\% PPL --- near-lossless asymmetric compression.}
 \label{tab:pareto-frontier}
 \end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/pareto_frontier.pdf}
+    \caption{Pareto frontier of compression ratio vs PPL change. Color encodes NIAH accuracy (green=100\%, orange=60\%). The q4/q4 transition point (orange ring) marks the boundary between NIAH-safe quantization-only configs and NIAH-limited eviction configs.}
+    \label{fig:pareto}
+\end{figure}
 
 \paragraph{Key Finding 8: The NIAH cliff has no middle ground.}
 Across all 27 valid configurations, NIAH is either 100\% (no eviction) or 60\% (any eviction at $\geq$50\%). There is no configuration achieving, e.g., 80\% NIAH --- the transition is binary. This further confirms the causal limitation: even modest eviction destroys retrieval for tokens in the evicted region.
