@@ -305,10 +305,10 @@ index 71c34db..eb0e087 100644
 +    }
 +}
 diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
-index 716a30f..070e34d 100644
+index 716a30f..af1a69c 100644
 --- a/tools/completion/completion.cpp
 +++ b/tools/completion/completion.cpp
-@@ -32,6 +32,305 @@
+@@ -32,6 +32,374 @@
  #pragma warning(disable: 4244 4267) // possible loss of data
  #endif
  
@@ -413,30 +413,74 @@ index 716a30f..070e34d 100644
 +
 +// Expected Attention state — declared here so callback can reference it
 +struct expected_attn_state {
-+    std::vector<double> k_sum;
-+    std::vector<double> k_sq_sum;
++    std::vector<double> k_sum;       // [d] running sum for mean
++    std::vector<double> k_sq_sum;    // [d] running sum of squares for variance
++    std::vector<std::vector<float>> k_vecs;  // [n_positions][d] stored K vectors
 +    int n_samples = 0;
 +    int d = 0;
++    int n_kv_max = 0;
 +    bool enabled = false;
 +
-+    void init(int head_dim) {
++    void init(int head_dim, int kv_max) {
 +        d = head_dim;
++        n_kv_max = kv_max;
 +        k_sum.assign(d, 0.0);
 +        k_sq_sum.assign(d, 0.0);
++        k_vecs.clear();
++        k_vecs.reserve(kv_max);
 +        n_samples = 0;
 +        enabled = true;
 +    }
 +
 +    void accumulate_keys(const float * k_data, int n_embd, int n_tokens) {
 +        if (!enabled || !k_data) return;
++        int dim = std::min(n_embd, d);
 +        for (int t = 0; t < n_tokens; t++) {
 +            const float * kv = k_data + t * n_embd;
-+            for (int j = 0; j < n_embd && j < d; j++) {
++            // Update running statistics
++            for (int j = 0; j < dim; j++) {
 +                k_sum[j]    += kv[j];
 +                k_sq_sum[j] += (double)kv[j] * kv[j];
 +            }
++            // Store K vector for later scoring
++            if ((int)k_vecs.size() < n_kv_max) {
++                k_vecs.emplace_back(kv, kv + dim);
++            }
 +            n_samples++;
 +        }
++    }
++
++    // Compute Expected Attention scores for all stored positions
++    // Returns scores vector (higher = more important)
++    std::vector<double> compute_all_scores() const {
++        std::vector<double> scores(k_vecs.size(), 0.0);
++        if (!enabled || n_samples < 2 || d == 0) return scores;
++
++        const double inv_n = 1.0 / n_samples;
++        const double inv_sqrt_d = 1.0 / sqrt((double)d);
++
++        // Pre-compute mu and var
++        std::vector<double> mu(d), var(d);
++        for (int j = 0; j < d; j++) {
++            mu[j]  = k_sum[j] * inv_n;
++            var[j] = k_sq_sum[j] * inv_n - mu[j] * mu[j];
++            if (var[j] < 1e-10) var[j] = 1e-10;
++        }
++
++        // Score each position
++        for (size_t i = 0; i < k_vecs.size(); i++) {
++            double dot_mu_k = 0.0;
++            double k_var_k = 0.0;
++            const auto & kv = k_vecs[i];
++            int dim = std::min((int)kv.size(), d);
++            for (int j = 0; j < dim; j++) {
++                dot_mu_k += mu[j] * kv[j];
++                k_var_k  += var[j] * kv[j] * kv[j];
++            }
++            scores[i] = dot_mu_k * inv_sqrt_d + k_var_k / (2.0 * d);
++        }
++
++        return scores;
 +    }
 +
 +    double score_token(const float * k_vec, int n_embd) const {
@@ -544,22 +588,47 @@ index 716a30f..070e34d 100644
 +        return;
 +    }
 +
-+    LOG_INF("ExpAttn: computing scores from K statistics (n_samples=%d, d=%d)\n",
-+            g_exp_attn.n_samples, g_exp_attn.d);
++    LOG_INF("ExpAttn: computing scores from K vectors (n_stored=%d, n_samples=%d, d=%d)\n",
++            (int)g_exp_attn.k_vecs.size(), g_exp_attn.n_samples, g_exp_attn.d);
 +
-+    // We need to score each token. The issue: we have aggregate K statistics
-+    // but not the individual K vectors per position.
-+    // Solution: use H2O accumulated scores (which we have if eval callback ran)
-+    // OR fall back to H2O scores for now.
-+    //
-+    // TODO: In a full implementation, we'd read the K cache tensor and compute
-+    // per-token scores using g_exp_attn.score_token(). For Phase 1, we use
-+    // the K statistics as a quality signal and fall back to H2O for per-token ranking.
++    // Phase 2: Pure K-based scoring using stored K vectors + Gaussian query model
++    if (!g_exp_attn.k_vecs.empty() && (int)g_exp_attn.k_vecs.size() >= n_past) {
++        // Compute Expected Attention scores for all positions
++        auto ea_scores = g_exp_attn.compute_all_scores();
 +
-+    if (g_h2o.enabled && g_h2o_callback_count > 0) {
-+        // Use H2O attention scores (already have per-position scores)
-+        LOG_INF("ExpAttn: using H2O scores for per-token ranking (%d callbacks)\n",
-+                g_h2o_callback_count);
++        LOG_INF("ExpAttn: K-based scores computed, min=%.4f max=%.4f\n",
++                *std::min_element(ea_scores.begin(), ea_scores.begin() + n_past),
++                *std::max_element(ea_scores.begin(), ea_scores.begin() + n_past));
++
++        // Build (score, position) pairs for non-sink tokens, sort by score ascending
++        std::vector<std::pair<double, int>> scored;
++        for (int i = n_sink; i < n_past; i++) {
++            scored.push_back({ea_scores[i], i});
++        }
++        std::sort(scored.begin(), scored.end());
++
++        // Evict lowest-score tokens
++        int actual = std::min(n_evict, (int)scored.size());
++        std::vector<int> victims;
++        for (int i = 0; i < actual; i++) {
++            victims.push_back(scored[i].second);
++        }
++
++        // Remove back-to-front
++        std::sort(victims.rbegin(), victims.rend());
++        int remaining = n_past;
++        for (int pos : victims) {
++            llama_memory_seq_rm(mem, 0, pos, pos + 1);
++            llama_memory_seq_add(mem, 0, pos + 1, remaining, -1);
++            remaining--;
++        }
++        n_past = remaining;
++        LOG_INF("ExpAttn: evicted %d tokens (K-based), n_past=%d\n", actual, n_past);
++
++    } else if (g_h2o.enabled && g_h2o_callback_count > 0) {
++        // Fallback: use H2O attention scores
++        LOG_INF("ExpAttn: fallback to H2O scores (%d callbacks, %d k_vecs)\n",
++                g_h2o_callback_count, (int)g_exp_attn.k_vecs.size());
 +        auto victims = g_h2o.batch_evict(n_past, n_sink, n_evict);
 +        int remaining = n_past;
 +        for (int i = (int)victims.size() - 1; i >= 0; i--) {
@@ -568,9 +637,9 @@ index 716a30f..070e34d 100644
 +            remaining--;
 +        }
 +        n_past = remaining;
-+        LOG_INF("ExpAttn: evicted %d tokens, n_past=%d\n", (int)victims.size(), n_past);
++        LOG_INF("ExpAttn: evicted %d tokens (H2O fallback), n_past=%d\n", (int)victims.size(), n_past);
 +    } else {
-+        LOG_WRN("ExpAttn: no H2O scores available, falling back to StreamingLLM eviction\n");
++        LOG_WRN("ExpAttn: no scores available, falling back to StreamingLLM eviction\n");
 +        // StreamingLLM fallback: evict middle tokens
 +        const int evict_start = n_sink;
 +        const int evict_end = evict_start + n_evict;
@@ -614,7 +683,7 @@ index 716a30f..070e34d 100644
  static llama_context           ** g_ctx;
  static llama_model             ** g_model;
  static common_sampler          ** g_smpl;
-@@ -94,6 +393,28 @@ int main(int argc, char ** argv) {
+@@ -94,6 +462,28 @@ int main(int argc, char ** argv) {
          return 1;
      }
  
@@ -643,7 +712,7 @@ index 716a30f..070e34d 100644
      common_init();
  
      auto & sparams = params.sampling;
-@@ -162,6 +483,23 @@ int main(int argc, char ** argv) {
+@@ -162,6 +552,25 @@ int main(int argc, char ** argv) {
      llama_memory_t mem = llama_get_memory(ctx);
      const llama_vocab * vocab = llama_model_get_vocab(model);
  
@@ -659,15 +728,17 @@ index 716a30f..070e34d 100644
 +
 +    // Initialize Expected Attention state
 +    if (params.exp_attn_eviction) {
-+        const int n_embd_head = 128;  // TODO: get from model params
-+        g_exp_attn.init(n_embd_head);
-+        LOG_INF("%s: Expected Attention initialized: head_dim=%d\n", __func__, n_embd_head);
++        const int n_embd_head = llama_model_n_embd(model) / llama_model_n_head(model);
++        const int n_ctx = llama_n_ctx(ctx);
++        g_exp_attn.init(n_embd_head, n_ctx);
++        LOG_INF("%s: Expected Attention Phase 2 initialized: head_dim=%d, kv_max=%d\n",
++                __func__, n_embd_head, n_ctx);
 +    }
 +
      // note: the time for chat template initialization is not negligible:
      auto chat_templates = common_chat_templates_init(model, params.chat_template);
  
-@@ -620,27 +958,102 @@ int main(int argc, char ** argv) {
+@@ -620,27 +1029,102 @@ int main(int argc, char ** argv) {
                  // - take the n_keep first tokens from the original prompt (via n_past)
                  // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
  
@@ -728,7 +799,8 @@ index 716a30f..070e34d 100644
 +                                LOG_INF("H2O victims: first=%d last=%d count=%d\n",
 +                                        victims.front(), victims.back(), (int)victims.size());
 +                            }
-+
+ 
+-                    n_past -= n_discard;
 +                            int remaining = n_past;
 +                            for (int i = (int)victims.size() - 1; i >= 0; i--) {
 +                                const int pos = victims[i];
@@ -767,8 +839,7 @@ index 716a30f..070e34d 100644
 +                        // Original context shifting
 +                        const int n_left    = n_past - params.n_keep;
 +                        const int n_discard = n_left/2;
- 
--                    n_past -= n_discard;
++
 +                        LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
 +                                n_past, n_left, n_ctx, params.n_keep, n_discard);
 +
@@ -780,7 +851,7 @@ index 716a30f..070e34d 100644
  
                      LOG_DBG("after swap: n_past = %d\n", n_past);
  
-@@ -718,6 +1131,13 @@ int main(int argc, char ** argv) {
+@@ -718,6 +1202,13 @@ int main(int argc, char ** argv) {
  
          if ((int) embd_inp.size() <= n_consumed && !is_interacting) {
  
