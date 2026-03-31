@@ -41,12 +41,12 @@ The resulting compression from quantization alone is:
 
 \subsection{Layer 2: Attention-Aware Eviction}
 
-\paragraph{StreamingLLM eviction strategy.}
-We adopt the attention sink observation: the first $n_{\text{sink}}$ tokens (typically 128) accumulate high attention regardless of content, while recent tokens within a window of size $n_{\text{recent}}$ carry local context. Tokens in the middle range can be evicted with bounded quality impact.
+\paragraph{Attention-aware eviction.}
+We use attention-weight-based eviction (following H\textsubscript{2}O~\citep{h2o2023}), retaining tokens with the highest cumulative attention scores regardless of position. This is critical: position-based strategies like StreamingLLM~\citep{streamingllm2024} perform well on perplexity (which tests local prediction) but catastrophically fail on retrieval tasks (NIAH) because the target information may reside at any position. Attention-aware eviction naturally preserves high-information tokens wherever they occur.
 
-For each generation step, the retained token set is:
+For each generation step, we maintain a running attention score $S_j = \sum_{t} a_{t,j}$ for each cached token $j$, and retain the top-$(1 - f_{\text{evict}})$ fraction by cumulative score:
 \begin{equation}
-    \mathcal{S} = \{1, \ldots, n_{\text{sink}}\} \cup \{n - n_{\text{recent}} + 1, \ldots, n\}
+    \mathcal{S} = \{j : S_j \geq \text{quantile}_{f_{\text{evict}}}(S)\}
 \end{equation}
 
 \paragraph{Noise-floor eviction criterion.}
@@ -56,6 +56,9 @@ Rather than using a fixed retention ratio, we derive the eviction threshold from
     \label{eq:evict-criterion}
 \end{equation}
 where $\sigma_{\text{floor}} = \sigma_V \sqrt{c_{b_V} \kappa + c_{b_K} \sigma_Q^2 \sigma_K^2 / T^2}$ is the per-dimension quantization noise (see Section~\ref{sec:theory} for derivation), $\kappa = \|a\|_2^2$ is the attention concentration, and $\alpha \in (0, 1]$ is a safety margin.
+
+\paragraph{Why not position-based eviction?}
+StreamingLLM (retain first 128 + recent window, evict middle) achieves excellent PPL ($<$1\% at 50\% eviction) because middle tokens contribute little to \emph{local} next-token prediction. However, it achieves only 20\% NIAH accuracy at 85\% eviction because needles at arbitrary positions are discarded. Attention-aware eviction resolves this: high-information tokens receive high attention scores and are retained regardless of position.
 
 \paragraph{Eviction ratio and context scaling.}
 The safe eviction ratio depends on context length. We empirically observe logarithmic scaling:
