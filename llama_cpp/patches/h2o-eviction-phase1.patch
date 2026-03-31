@@ -53,10 +53,10 @@ index 17dc3fb..4053ae5 100644
                                       //
      bool   hellaswag        = false; // compute HellaSwag score over random tasks from datafile supplied in prompt
 diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
-index 716a30f..4f8a448 100644
+index 716a30f..859d78c 100644
 --- a/tools/completion/completion.cpp
 +++ b/tools/completion/completion.cpp
-@@ -32,6 +32,104 @@
+@@ -32,6 +32,103 @@
  #pragma warning(disable: 4244 4267) // possible loss of data
  #endif
  
@@ -135,12 +135,11 @@ index 716a30f..4f8a448 100644
 +    if (!name) return true;
 +
 +    // Match "kq_soft_max-N" where N is layer index
-+    if (strncmp(name, "kq_soft_max-", 12) != 0) {
-+        if (ask) return true;  // don't need this tensor
-+        return true;
-+    }
++    const bool is_attn = (strncmp(name, "kq_soft_max-", 12) == 0);
 +
-+    if (ask) return true;  // yes, we want to observe this tensor
++    if (ask) return is_attn;  // only request data for attention tensors
++
++    if (!is_attn) return true;  // skip non-attention tensors
 +
 +    // Tensor is ready — read attention weights
 +    // Shape: [n_kv, n_tokens, n_head, 1]
@@ -161,7 +160,7 @@ index 716a30f..4f8a448 100644
  static llama_context           ** g_ctx;
  static llama_model             ** g_model;
  static common_sampler          ** g_smpl;
-@@ -94,6 +192,21 @@ int main(int argc, char ** argv) {
+@@ -94,6 +191,21 @@ int main(int argc, char ** argv) {
          return 1;
      }
  
@@ -183,7 +182,7 @@ index 716a30f..4f8a448 100644
      common_init();
  
      auto & sparams = params.sampling;
-@@ -162,6 +275,16 @@ int main(int argc, char ** argv) {
+@@ -162,6 +274,16 @@ int main(int argc, char ** argv) {
      llama_memory_t mem = llama_get_memory(ctx);
      const llama_vocab * vocab = llama_model_get_vocab(model);
  
@@ -200,7 +199,7 @@ index 716a30f..4f8a448 100644
      // note: the time for chat template initialization is not negligible:
      auto chat_templates = common_chat_templates_init(model, params.chat_template);
  
-@@ -620,27 +743,80 @@ int main(int argc, char ** argv) {
+@@ -620,27 +742,80 @@ int main(int argc, char ** argv) {
                  // - take the n_keep first tokens from the original prompt (via n_past)
                  // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
  
