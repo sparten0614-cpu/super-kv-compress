@@ -1,0 +1,289 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index ece116e..03cf4ab 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -387,6 +387,11 @@ const std::vector<ggml_type> kv_cache_types = {
+     GGML_TYPE_IQ4_NL,
+     GGML_TYPE_Q5_0,
+     GGML_TYPE_Q5_1,
++    GGML_TYPE_Q2_K,
++    GGML_TYPE_Q3_K,
++    GGML_TYPE_Q4_K,
++    GGML_TYPE_Q5_K,
++    GGML_TYPE_Q6_K,
+     GGML_TYPE_TQKV_2,
+     GGML_TYPE_TQKV_4,
+     GGML_TYPE_TQKV_4Q,
+@@ -2093,6 +2098,43 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.ppl_output_type = value;
+         }
+     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
++    add_opt(common_arg(
++        {"--evict-ratio"}, "N",
++        string_format("KV cache eviction ratio (0.0-0.9, default: %.1f)", (double)params.evict_ratio),
++        [](common_params & params, const std::string & value) {
++            params.evict_ratio = std::stof(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-mode"}, "N",
++        string_format("Eviction mode: 0=sliding window, 1=StreamingLLM (keep first+last) (default: %d)", params.evict_mode),
++        [](common_params & params, const std::string & value) {
++            params.evict_mode = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-sink"}, "N",
++        string_format("Number of attention sink tokens to keep at start (StreamingLLM mode) (default: %d)", params.evict_sink),
++        [](common_params & params, const std::string & value) {
++            params.evict_sink = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--h2o-eviction"},
++        "Use H2O attention-aware eviction (Heavy-Hitter Oracle) instead of position-based",
++        [](common_params & params) {
++            params.h2o_eviction = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--kv-type-map"}, "MAP",
++        "Per-layer KV cache type map. Format: \"layer:type,...\" or \"start-end:type,...\"\n"
++        "Example: \"0:q8_0,1-30:q4_0,31:q8_0\" (first/last layer q8_0, rest q4_0)\n"
++        "Overrides --cache-type-k/v for specified layers",
++        [](common_params & params, const std::string & value) {
++            params.kv_type_map = value;
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
+     add_opt(common_arg(
+         {"-dt", "--defrag-thold"}, "N",
+         string_format("KV cache defragmentation threshold (DEPRECATED)"),
+diff --git a/common/common.cpp b/common/common.cpp
+index a9bd494..e51755f 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -4,6 +4,9 @@
+ #include "common.h"
+ #include "log.h"
+ #include "llama.h"
++
++// TurboQuant auto-calibration (defined in src/llama-tqkv.cpp)
++extern int tqkv_auto_calibrate(struct llama_model * model, int n_tokens);
+ #include "sampling.h"
+ #include "unicode.h"
+ 
+@@ -1225,6 +1228,11 @@ common_init_result::common_init_result(common_params & params) :
+         cparams.n_samplers = pimpl->samplers_seq_config.size();
+     }
+ 
++    // TurboQuant auto-calibration: disabled for now (memory issues with large models)
++    // Use TQKV_SKIP_LAYERS env var for manual layer skipping
++    // TODO: re-enable when calibration memory management is fixed
++    (void)tqkv_auto_calibrate; // suppress unused warning
++
+     llama_context * lctx = llama_init_from_model(model, cparams);
+     if (lctx == NULL) {
+         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
+@@ -1471,6 +1479,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+     cparams.type_k = params.cache_type_k;
+     cparams.type_v = params.cache_type_v;
+ 
++    // Set KV_TYPE_MAP env var from CLI flag (read by llama-kv-cache.cpp)
++    if (!params.kv_type_map.empty()) {
++        setenv("KV_TYPE_MAP", params.kv_type_map.c_str(), 1);
++    }
++
+     return cparams;
+ }
+ 
+diff --git a/common/common.h b/common/common.h
+index 17dc3fb..2ec3433 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -497,6 +497,11 @@ struct common_params {
+ 
+     int32_t ppl_stride      = 0;     // stride for perplexity calculations. If left at 0, the pre-existing approach will be used.
+     int32_t ppl_output_type = 0;     // = 0 -> ppl output is as usual, = 1 -> ppl output is num_tokens, ppl, one per line
++    float   evict_ratio     = 0.0f;  // KV cache eviction ratio (0.0 = no eviction, 0.9 = evict 90% of oldest tokens)
++    int     evict_mode      = 0;     // 0 = sliding window (evict oldest), 1 = StreamingLLM (keep first+last, evict middle)
++    int     evict_sink      = 128;   // number of "attention sink" tokens to always keep at the beginning (mode 1)
++    bool    h2o_eviction    = false; // use H2O attention-aware eviction (Heavy-Hitter Oracle)
++    std::string kv_type_map;           // per-layer KV type map, e.g. "0:q8_0,1-30:q4_0,31:q8_0"
+                                      //                                       (which is more convenient to use for plotting)
+                                      //
+     bool   hellaswag        = false; // compute HellaSwag score over random tasks from datafile supplied in prompt
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 71c34db..eb0e087 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-kv-cache.h"
+ #include "llama-tqkv.h"
++#include "ggml-backend.h"
+ 
+ #include "llama-impl.h"
+ #include "llama-io.h"
+@@ -12,6 +13,75 @@
+ #include <cstring>
+ #include <limits>
+ #include <map>
++#include <sstream>
++
++// ============================================================================
++// Per-layer KV type map: parse "0:q8_0,1-30:q4_0,31:q8_0" format
++// ============================================================================
++static std::map<int, ggml_type> g_kv_type_map;
++static bool g_kv_type_map_parsed = false;
++
++static ggml_type kv_type_from_name(const std::string & name) {
++    for (int t = 0; t < GGML_TYPE_COUNT; t++) {
++        if (ggml_type_name((ggml_type)t) && name == ggml_type_name((ggml_type)t)) {
++            return (ggml_type)t;
++        }
++    }
++    return GGML_TYPE_COUNT;  // invalid
++}
++
++static void parse_kv_type_map() {
++    if (g_kv_type_map_parsed) return;
++    g_kv_type_map_parsed = true;
++
++    const char * env = getenv("KV_TYPE_MAP");
++    if (!env || !env[0]) return;
++
++    std::string map_str(env);
++    std::istringstream ss(map_str);
++    std::string entry;
++
++    while (std::getline(ss, entry, ',')) {
++        // Parse "layer:type" or "start-end:type"
++        auto colon = entry.find(':');
++        if (colon == std::string::npos) continue;
++
++        std::string range = entry.substr(0, colon);
++        std::string type_name = entry.substr(colon + 1);
++        ggml_type type = kv_type_from_name(type_name);
++        if (type == GGML_TYPE_COUNT) {
++            LLAMA_LOG_WARN("%s: unknown type '%s' in KV_TYPE_MAP\n", __func__, type_name.c_str());
++            continue;
++        }
++
++        auto dash = range.find('-');
++        if (dash == std::string::npos) {
++            // Single layer
++            int layer = std::stoi(range);
++            g_kv_type_map[layer] = type;
++        } else {
++            // Range
++            int start = std::stoi(range.substr(0, dash));
++            int end   = std::stoi(range.substr(dash + 1));
++            for (int i = start; i <= end; i++) {
++                g_kv_type_map[i] = type;
++            }
++        }
++    }
++
++    if (!g_kv_type_map.empty()) {
++        LLAMA_LOG_INFO("%s: KV_TYPE_MAP: %zu layer overrides\n", __func__, g_kv_type_map.size());
++    }
++}
++
++static ggml_type get_layer_kv_type(int il, ggml_type default_type) {
++    parse_kv_type_map();
++    auto it = g_kv_type_map.find(il);
++    if (it != g_kv_type_map.end()) {
++        return it->second;
++    }
++    return default_type;
++}
+ #include <stdexcept>
+ 
+ //
+@@ -136,9 +206,9 @@ llama_kv_cache::llama_kv_cache(
+         const bool has_k = true;
+         const bool has_v = !is_mla;
+ 
+-        // Per-layer type override: skip layers use F16 instead of quantized type
+-        ggml_type layer_type_k = tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_k;
+-        ggml_type layer_type_v = tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_v;
++        // Per-layer type override: KV_TYPE_MAP env var, then TQKV_SKIP_LAYERS fallback
++        ggml_type layer_type_k = get_layer_kv_type(il, tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_k);
++        ggml_type layer_type_v = get_layer_kv_type(il, tqkv_is_skip_layer(il) ? GGML_TYPE_F16 : type_v);
+ 
+         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+@@ -181,7 +251,9 @@ llama_kv_cache::llama_kv_cache(
+         while (pos < s.size()) {
+             size_t comma = s.find(',', pos);
+             if (comma == std::string::npos) comma = s.size();
+-            int layer = std::stoi(s.substr(pos, comma - pos));
++            std::string tok = s.substr(pos, comma - pos);
++            int layer = -1;
++            try { layer = std::stoi(tok); } catch (...) {}
+             if (layer >= 0 && layer < TQKV_MAX_LAYERS && layer < (int)hparams.n_layer) {
+                 tqkv_set_skip_layer(layer, true);
+                 LLAMA_LOG_INFO("%s: TQKV skip layer %d (F16 fallback)\n", __func__, layer);
+@@ -2367,3 +2439,63 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
+ void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+     kv->set_input_pos_bucket(dst, ubatch);
+ }
++
++// Read K max abs values from KV cache (F16 type expected for calibration)
++void llama_kv_cache::read_k_max(float * k_max_out, int n_layer, int n_tokens) const {
++    LLAMA_LOG_INFO("[TQKV read_k_max] layers=%zu, n_layer=%d, n_tokens=%d\n",
++                   layers.size(), n_layer, n_tokens);
++    for (int il = 0; il < n_layer && il < (int)layers.size(); il++) {
++        ggml_tensor * k = layers[il].k;
++        if (!k) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer %d: k is null\n", il);
++            k_max_out[il] = 0.0f;
++            continue;
++        }
++        if (k->type != GGML_TYPE_F16) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer %d: type=%d (not F16=%d)\n", il, k->type, GGML_TYPE_F16);
++            k_max_out[il] = 0.0f;
++            continue;
++        }
++
++        const int64_t n_embd = k->ne[0];
++        const size_t row_bytes = n_embd * ggml_type_size(GGML_TYPE_F16);
++        std::vector<uint16_t> row_buf(n_embd);
++
++        float layer_max = 0.0f;
++        int rows_to_read = std::min((int64_t)n_tokens, k->ne[1]);
++        if (il == 0) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer 0: ne[0]=%lld ne[1]=%lld type=%d rows=%d row_bytes=%zu data=%p buffer=%p\n",
++                           (long long)n_embd, (long long)k->ne[1], k->type, rows_to_read, row_bytes,
++                           (void*)k->data, (void*)k->buffer);
++        }
++        for (int t = 0; t < rows_to_read; t++) {
++            // Use direct memory access (Apple Silicon unified memory)
++            // ggml_backend_tensor_get might not sync Metal buffers correctly
++            memcpy(row_buf.data(), (const char *)k->data + t * row_bytes, row_bytes);
++            for (int64_t j = 0; j < n_embd; j++) {
++                float val = ggml_fp16_to_fp32(row_buf[j]);
++                float av = fabsf(val);
++                if (av > layer_max) layer_max = av;
++            }
++        }
++        if (il == 0) {
++            LLAMA_LOG_INFO("[TQKV read_k_max] layer 0: max=%.4f, first5: %.4f %.4f %.4f %.4f %.4f\n",
++                           layer_max,
++                           rows_to_read > 0 ? ggml_fp16_to_fp32(row_buf[0]) : 0.0f,
++                           n_embd > 1 ? ggml_fp16_to_fp32(row_buf[1]) : 0.0f,
++                           n_embd > 2 ? ggml_fp16_to_fp32(row_buf[2]) : 0.0f,
++                           n_embd > 3 ? ggml_fp16_to_fp32(row_buf[3]) : 0.0f,
++                           n_embd > 4 ? ggml_fp16_to_fp32(row_buf[4]) : 0.0f);
++        }
++        k_max_out[il] = layer_max;
++    }
++}
++
++// Free function wrapper for tqkv_read_k_max
++void tqkv_read_k_max(struct llama_context * ctx, float * k_max_out, int n_layer, int n_tokens) {
++    llama_memory_t mem = llama_get_memory(ctx);
++    auto * kv = dynamic_cast<llama_kv_cache *>(mem);
++    if (kv) {
++        kv->read_k_max(k_max_out, n_layer, n_tokens);
++    }
++}
