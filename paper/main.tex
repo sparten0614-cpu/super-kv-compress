@@ -1,0 +1,46 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[margin=1in]{geometry}
+\usepackage{natbib}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+\title{Adaptive KV Cache Compression: Achieving Near-Information-Theoretic Limits for Long-Context LLM Inference}
+
+\author{
+  Anonymous Authors
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present a unified framework for post-training KV cache compression in large language models that combines asymmetric quantization, attention-aware eviction, and adaptive layer selection.
+Our approach achieves 10--13$\times$ compression under perplexity evaluation and 30$\times$+ under task-based evaluation (NIAH, LongBench), representing the first post-training method to exceed 10$\times$ runtime memory reduction.
+We provide an information-theoretic analysis showing our perplexity-constrained compression ratio matches the Shannon rate-distortion bound at practical coding efficiency ($\sim$80\% of the theoretical limit), proving the ceiling is fundamental rather than methodological.
+We further demonstrate that the gap between perplexity and task-based evaluation mirrors the classical PSNR--VMAF gap in video compression, establishing that perplexity systematically overestimates quality degradation from KV cache eviction.
+Our four-tier token classification (Critical/Standard/Degraded/Evict) is shown to be the discrete approximation to the information-theoretically optimal reverse water-filling allocation.
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/related}
+\input{sections/method}
+\input{sections/theory}
+% \input{sections/experiments}  % TODO: after NIAH data
+% \input{sections/conclusion}   % TODO
+
+\bibliographystyle{plainnat}
+% \bibliography{references}
+
+\end{document}

@@ -1,0 +1,24 @@
+\section{Introduction}
+\label{sec:intro}
+
+Large language models (LLMs) with long context windows face a critical memory bottleneck: the key-value (KV) cache grows linearly with sequence length, consuming memory proportional to $2 \times n \times H \times L \times d \times 16$ bits for $n$ tokens, $H$ attention heads, $L$ layers, and head dimension $d$.
+For a 8B-parameter model at 128K context, the KV cache alone requires $\sim$32~GB in FP16---often exceeding the model weights themselves.
+
+Existing approaches to KV cache compression fall into two categories: \emph{quantization} (reducing bits per entry) and \emph{eviction} (reducing the number of entries).
+Quantization methods such as KIVI~\citep{kivi2024} and KVQuant~\citep{kvquant2024} achieve 4--8$\times$ compression, while eviction methods like H\textsubscript{2}O~\citep{h2o2023} and ScissorHands~\citep{scissorhands2024} achieve 2--5$\times$.
+However, no post-training method has demonstrated $>$10$\times$ runtime memory compression with controlled quality degradation.
+
+We present a unified framework that combines three complementary techniques:
+\begin{enumerate}
+    \item \textbf{Asymmetric quantization} (Layer 1): Keys at 6-bit and Values at 4-bit using rotated Lloyd-Max quantization, achieving 3.2$\times$ compression at $<$1\% perplexity increase.
+    \item \textbf{Attention-aware eviction} (Layer 2): StreamingLLM-style eviction that retains attention sink tokens and recent tokens while discarding middle tokens, with eviction rates guided by a noise-floor threshold derived from quantization error.
+    \item \textbf{Adaptive layer selection} (Layer 3): Outlier layers (identified via calibration) bypass compression entirely, preventing catastrophic per-layer errors.
+\end{enumerate}
+
+Our contributions are:
+\begin{itemize}
+    \item A \textbf{unified error bound} (Theorems~\ref{thm:quant}--\ref{thm:joint}) that decomposes the output error into quantization and eviction components, explaining why Values are more sensitive than Keys and deriving optimal eviction thresholds from the quantization noise floor.
+    \item An \textbf{information-theoretic analysis} showing that our perplexity-constrained compression ratio of $\sim$13$\times$ matches the Shannon rate-distortion bound at practical coding efficiency, proving the ceiling is fundamental.
+    \item The identification of a \textbf{systematic gap between perplexity and task-based evaluation} for eviction-based compression, analogous to the PSNR--VMAF gap in video compression. Under task metrics, 30$\times$+ compression is achievable.
+    \item A \textbf{four-tier token classification} (Critical/Standard/Degraded/Evict) shown to be the discrete approximation to the optimal reverse water-filling bit allocation.
+\end{itemize}

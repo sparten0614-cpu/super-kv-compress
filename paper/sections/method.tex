@@ -1,0 +1,126 @@
+\section{Method}
+\label{sec:method}
+
+We present a three-layer KV cache compression pipeline that operates entirely post-training, requiring only a small calibration dataset for parameter selection. Figure~\ref{fig:pipeline} illustrates the overall architecture.
+
+\subsection{Preliminaries}
+
+Consider a transformer attention head with query $q \in \mathbb{R}^d$, key matrix $K \in \mathbb{R}^{n \times d}$, and value matrix $V \in \mathbb{R}^{n \times d}$, where $n$ is the context length and $d$ is the head dimension. The attention output is:
+\begin{equation}
+    o = \sum_{i=1}^{n} a_i v_i, \quad a_i = \frac{\exp(q^\top k_i / \sqrt{d})}{\sum_j \exp(q^\top k_j / \sqrt{d})}
+\end{equation}
+
+The KV cache stores all $\{(k_i, v_i)\}_{i=1}^n$ in FP16, requiring $2 \times n \times d \times 16$ bits per head.
+
+\subsection{Layer 1: Asymmetric Rotated Quantization}
+
+\paragraph{Hadamard rotation.}
+Following TurboQuant, we apply a fixed Hadamard matrix $H_d \in \mathbb{R}^{d \times d}$ to each KV vector before quantization:
+\begin{equation}
+    \tilde{k}_i = H_d k_i, \quad \tilde{v}_i = H_d v_i
+\end{equation}
+By the Johnson-Lindenstrauss property of random orthogonal projections, the rotated entries are approximately i.i.d.\ Gaussian, eliminating outlier channels that plague direct quantization.
+
+\paragraph{Lloyd-Max scalar quantization.}
+Each rotated entry is quantized using $b$-bit Lloyd-Max quantization optimized for the Gaussian distribution $\mathcal{N}(0, \sigma^2)$. The per-entry MSE distortion is:
+\begin{equation}
+    \text{MSE}_b = c_b \cdot \sigma^2
+\end{equation}
+where $c_b$ is the Lloyd-Max distortion coefficient: $c_6 \approx 0.0066$, $c_4 \approx 0.0357$, $c_2 \approx 0.3634$.
+
+\paragraph{Asymmetric K/V allocation.}
+We allocate different bit-widths to Keys and Values: $b_K = 6$ bits, $b_V = 4$ bits. This asymmetric allocation is motivated by two empirical findings:
+\begin{enumerate}
+    \item Keys have higher sensitivity to quantization noise due to softmax nonlinearity (consistent with KVTuner), but
+    \item Values exhibit a sharp quality cliff between 2-bit and 4-bit ($c_2/c_4 \approx 10\times$), making V$=$4-bit the minimum viable precision.
+\end{enumerate}
+The resulting compression from quantization alone is:
+\begin{equation}
+    \rho_{\text{quant}} = \frac{2 \times 16}{b_K + b_V} = \frac{32}{10} = 3.2\times
+\end{equation}
+
+\subsection{Layer 2: Attention-Aware Eviction}
+
+\paragraph{StreamingLLM eviction strategy.}
+We adopt the attention sink observation: the first $n_{\text{sink}}$ tokens (typically 128) accumulate high attention regardless of content, while recent tokens within a window of size $n_{\text{recent}}$ carry local context. Tokens in the middle range can be evicted with bounded quality impact.
+
+For each generation step, the retained token set is:
+\begin{equation}
+    \mathcal{S} = \{1, \ldots, n_{\text{sink}}\} \cup \{n - n_{\text{recent}} + 1, \ldots, n\}
+\end{equation}
+
+\paragraph{Noise-floor eviction criterion.}
+Rather than using a fixed retention ratio, we derive the eviction threshold from the quantization noise floor. A token $j$ is safe to evict when its contribution to the output is below the quantization noise:
+\begin{equation}
+    a_j \|v_j\| < \alpha \cdot \sigma_{\text{floor}}
+    \label{eq:evict-criterion}
+\end{equation}
+where $\sigma_{\text{floor}} = \sigma_V \sqrt{c_{b_V} \kappa + c_{b_K} \sigma_Q^2 \sigma_K^2 / T^2}$ is the per-dimension quantization noise (see Section~\ref{sec:theory} for derivation), $\kappa = \|a\|_2^2$ is the attention concentration, and $\alpha \in (0, 1]$ is a safety margin.
+
+\paragraph{Eviction ratio and context scaling.}
+The safe eviction ratio depends on context length. We empirically observe logarithmic scaling:
+\begin{equation}
+    f_{\text{safe}}(n) = 0.277 + 0.0405 \cdot \ln(n)
+\end{equation}
+At $n = 512$, $f_{\text{safe}} \approx 53\%$ (2.1$\times$); at $n = 128K$, $f_{\text{safe}} \approx 75\%$ (4$\times$). This scaling arises because the number of semantically important middle tokens grows as $O(\log n)$, reflecting the hierarchical structure of natural language.
+
+\subsection{Layer 3: Adaptive Layer Selection}
+
+Not all transformer layers respond equally to compression. Outlier layers (e.g., the first and last layers in some architectures) exhibit atypical attention patterns where quantization causes disproportionate error.
+
+\paragraph{Calibration-based identification.}
+Using a small calibration dataset ($\sim$10 chunks of 512 tokens), we compute per-layer perplexity contribution under compression. Layers where the per-layer PPL increase exceeds a threshold $\delta$ (typically 2$\times$ the median) are marked as outliers and retain FP16 KV caches.
+
+\paragraph{Impact on compression ratio.}
+Skipping $s$ out of $L$ layers reduces the overall compression ratio:
+\begin{equation}
+    \rho_{\text{total}} = \frac{L}{s + (L - s) / \rho_{\text{compressed}}}
+\end{equation}
+For $L = 32$ and $s = 2$ (typical): $\rho_{\text{total}} = 32 / (2 + 30/\rho_c)$. With $\rho_c = 6.4\times$ (quant + eviction), $\rho_{\text{total}} = 32 / 6.69 = 4.8\times$. The cost is modest ($\sim$15\% reduction) but prevents catastrophic quality loss (e.g., Qwen: +4.4\% $\to$ +0.04\% PPL).
+
+\subsection{Four-Tier Token Classification}
+\label{sec:four-tier}
+
+The three layers above can be unified into a single per-token decision based on attention weight $a_j$:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{Tier} & \textbf{Condition} & \textbf{Treatment} & \textbf{Bits} \\
+\midrule
+Critical & $a_j > \tau_3$ & Retain, V $=$ 6-bit & 12 \\
+Standard & $\tau_2 < a_j \leq \tau_3$ & Retain, V $=$ 4-bit & 10 \\
+Degraded & $\tau_1 < a_j \leq \tau_2$ & Retain, V $=$ 2-bit & 8 \\
+Evict & $a_j \leq \tau_1$ & Discard & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Four-tier token classification. Thresholds $\tau_1, \tau_2, \tau_3$ are derived from the quantization error bound (Section~\ref{sec:theory}).}
+\label{tab:tiers}
+\end{table}
+
+The key insight is that V$=$2-bit is catastrophic when applied uniformly (+48\% PPL) but safe when restricted to low-attention tokens: the error contribution $a_j \cdot \|\delta_{v_j}\|$ remains small because $a_j$ itself is small.
+
+The thresholds satisfy $\tau_1 : \tau_2 : \tau_3 \approx 1 : 2.4 : 9.3$ (derived in Section~\ref{sec:threshold-derivation}), meaning the precision tiers span roughly one order of magnitude in attention weight.
+
+\subsection{Compression Ratio Analysis}
+
+The total compression ratio depends on the tier fractions:
+\begin{equation}
+    \rho = \frac{32}{f_{\text{crit}} \times 12 + f_{\text{std}} \times 10 + f_{\text{deg}} \times 8}
+\end{equation}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Context} & $f_{\text{crit}}$ & $f_{\text{std}}$ & $f_{\text{deg}}$ & $f_{\text{evict}}$ & \textbf{PPL $\rho$} & \textbf{Task $\rho$} \\
+\midrule
+512 & 0.05 & 0.15 & 0.30 & 0.50 & 7.1$\times$ & --- \\
+16K & 0.03 & 0.07 & 0.23 & 0.67 & 9.7$\times$ & $\sim$30$\times$ \\
+128K & 0.02 & 0.03 & 0.20 & 0.75 & 12.8$\times$ & $\sim$50$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Compression ratios at different context lengths under PPL ($<$1\%) and task-based evaluation.}
+\label{tab:compression}
+\end{table}
