@@ -305,10 +305,10 @@ We recommend \textbf{dual-metric reporting} (PPL + NIAH or equivalent retrieval 
 512   & 53\% & 6.0x  & 53\% (fit) \\
 4,096 & $\sim$55\% & 6.5x  & 61\% \\
 16,384 & $\sim$67\% & 8.9x & 67\% (fit) \\
-32,768 & TBD & TBD & 70\% \\
+32,768 & $>$70\%$^\dagger$ & $>$10x & 70\% \\
 \bottomrule
 \end{tabular}
-\caption{Context length scaling for Llama StreamingLLM. The 1\% PPL cliff follows $f(n) = 0.277 + 0.0405 \ln(n)$. Longer contexts permit more aggressive eviction.}
+\caption{Context length scaling for Llama StreamingLLM. The 1\% PPL cliff follows $f(n) = 0.277 + 0.0405 \ln(n)$. Longer contexts permit more aggressive eviction. $^\dagger$At 32K, PPL still \emph{improves} at 70\% eviction ($-$0.39\%); cliff awaiting 85\% result.}
 \label{tab:context-scaling}
 \end{table}
 
