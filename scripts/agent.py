@@ -85,7 +85,7 @@ If all obvious configs have been tried, suggest a novel direction."""
 
 class ResearchAgent:
     def __init__(self, model_path, wiki_path, ctx, ngl, chunks,
-                 outdir, perplexity_bin, niah_script, skip_niah=False):
+                 outdir, perplexity_bin, niah_script, skip_niah=False, mock=False):
         self.model = model_path
         self.wiki = wiki_path
         self.ctx = ctx
@@ -95,6 +95,7 @@ class ResearchAgent:
         self.perplexity_bin = perplexity_bin
         self.niah_script = niah_script
         self.skip_niah = skip_niah
+        self.mock = mock
         self.results_file = os.path.join(outdir, "results.jsonl")
         self.log_file = os.path.join(outdir, "agent_log.md")
 
@@ -188,7 +189,7 @@ or better quality at similar compression."""
         return None, text
 
     def execute_experiment(self, config):
-        """Run PPL + NIAH for a single config."""
+        """Run PPL + NIAH for a single config (or mock)."""
         qk = config.get("quant_k", "f16")
         qv = config.get("quant_v", "f16")
         er = config.get("evict_ratio", 0.0)
@@ -198,20 +199,31 @@ or better quality at similar compression."""
         comp = compression_ratio(qk, qv, er)
         print(f"  Executing: {qk}/{qv} evict={er:.0%} method={em} skip={sl} (comp={comp:.2f}x)")
 
-        # PPL
-        t0 = time.time()
-        ppl = run_ppl(self.model, self.wiki, self.ctx, self.chunks, self.ngl,
-                      qk, qv, er, em, sl, self.perplexity_bin)
-        ppl_time = time.time() - t0
-
-        # NIAH
-        niah_acc = None
-        niah_time = 0
-        if not self.skip_niah and ppl is not None:
+        if self.mock:
+            # Mock mode: generate plausible fake results for testing
+            import random
+            base_ppl = 6.0
+            # Higher compression → worse PPL (roughly)
+            ppl = base_ppl * (1.0 + 0.03 * comp + random.gauss(0, 0.01))
+            # NIAH degrades with eviction
+            niah_acc = max(0.0, 1.0 - er * 0.8 + random.gauss(0, 0.05))
+            niah_acc = min(1.0, niah_acc)
+            ppl_time, niah_time = 0.1, 0.1
+            print(f"  [MOCK] PPL={ppl:.4f} NIAH={niah_acc:.0%}")
+        else:
+            # Real execution
             t0 = time.time()
-            niah_acc = run_niah(self.model, self.ctx, self.ngl, qk, qv, er, em, sl,
-                               self.niah_script)
-            niah_time = time.time() - t0
+            ppl = run_ppl(self.model, self.wiki, self.ctx, self.chunks, self.ngl,
+                          qk, qv, er, em, sl, self.perplexity_bin)
+            ppl_time = time.time() - t0
+
+            niah_acc = None
+            niah_time = 0
+            if not self.skip_niah and ppl is not None:
+                t0 = time.time()
+                niah_acc = run_niah(self.model, self.ctx, self.ngl, qk, qv, er, em, sl,
+                                   self.niah_script)
+                niah_time = time.time() - t0
 
         result = {
             "quant_k": qk, "quant_v": qv,
@@ -332,6 +344,8 @@ def main():
     parser.add_argument("--perplexity-bin", default="llama-perplexity")
     parser.add_argument("--niah-script", default="scripts/niah_test.py")
     parser.add_argument("--skip-niah", action="store_true")
+    parser.add_argument("--mock", action="store_true",
+                       help="Mock mode: fake PPL/NIAH results for testing agent logic")
     args = parser.parse_args()
 
     agent = ResearchAgent(
@@ -344,6 +358,7 @@ def main():
         perplexity_bin=args.perplexity_bin,
         niah_script=args.niah_script,
         skip_niah=args.skip_niah,
+        mock=args.mock,
     )
     agent.run(max_rounds=args.max_rounds)
 
