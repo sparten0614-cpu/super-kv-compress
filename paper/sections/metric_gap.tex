@@ -58,8 +58,9 @@ The shift from PSNR to VMAF allowed video codecs to achieve 2--3$\times$ higher 
 \midrule
 No compression & 0\% & --- & 100\% & baseline \\
 K6V4 only & 0\% & +0.52\% & 100\% & OK \\
-K6V4 + StreamingLLM & 50\% & +0.46\% & \textcolor{red}{20\%} & PPL OK, task FAIL \\
-K6V4 + StreamingLLM & 85\% & +7.50\% & \textcolor{red}{$\sim$0\%} & both FAIL \\
+K6V4 + StreamingLLM & 50\% & $-$0.09\% & \textcolor{red}{60\%} & PPL perfect, task DEGRADED \\
+K6V4 + StreamingLLM & 70\% & +1.04\% & \textcolor{red}{40\%} & PPL marginal, task FAIL \\
+K6V4 + StreamingLLM & 85\% & +6.37\% & \textcolor{red}{20\%} & both FAIL \\
 K6V4 + H2O & 50\% & TBD & TBD & --- \\
 K6V4 + H2O & 85\% & TBD & TBD & \textbf{key experiment} \\
 \bottomrule

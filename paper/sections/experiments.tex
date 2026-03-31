@@ -80,7 +80,8 @@ We evaluate our two-knife compression pipeline (K6V4 asymmetric quantization + H
 FP16 & 0\% & 1x & 100\% & 100\% & 100\% \\
 K6V4 only & 0\% & 3.2x & 100\% & TBD & TBD \\
 \midrule
-K6V4 + StreamingLLM & 50\% & 6.4x & TBD & TBD & TBD \\
+K6V4 + StreamingLLM & 50\% & 6.4x & TBD & TBD & 60\% \\
+K6V4 + StreamingLLM & 70\% & 9.7x & TBD & TBD & 40\% \\
 K6V4 + StreamingLLM & 85\% & 21x & TBD & TBD & 20\% \\
 \midrule
 K6V4 + H2O & 50\% & 6.4x & TBD & TBD & TBD \\
@@ -160,8 +161,9 @@ K6V4 + H2O 90\% & 32x & TBD & TBD & TBD & TBD & TBD \\
 \toprule
 \textbf{Method} & \textbf{Eviction} & \textbf{PPL $\Delta$} & \textbf{NIAH 16K} & \textbf{Explanation} \\
 \midrule
-StreamingLLM & 50\% & +0.46\% & 20\% & Position-based: evicts needle \\
-StreamingLLM & 85\% & +7.50\% & $\sim$0\% & Position-based: all middle gone \\
+StreamingLLM & 50\% & $-$0.09\% & 60\% & Position-based: needles at 10\%/25\% evicted \\
+StreamingLLM & 70\% & +1.04\% & 40\% & Position-based: needles at 10\%/25\%/50\% evicted \\
+StreamingLLM & 85\% & +6.37\% & 20\% & Only 90\% position needle survives \\
 H2O & 50\% & TBD & TBD & Attention-based: retains needle \\
 H2O & 85\% & TBD & TBD & Attention-based: retains needle \\
 \bottomrule
