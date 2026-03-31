@@ -1,0 +1,293 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index ece116e..84bc49d 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2093,6 +2093,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.ppl_output_type = value;
+         }
+     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
++    add_opt(common_arg(
++        {"--evict-ratio"}, "N",
++        string_format("KV cache eviction ratio (0.0-0.9, default: %.1f)", (double)params.evict_ratio),
++        [](common_params & params, const std::string & value) {
++            params.evict_ratio = std::stof(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-mode"}, "N",
++        string_format("Eviction mode: 0=sliding window, 1=StreamingLLM (keep first+last) (default: %d)", params.evict_mode),
++        [](common_params & params, const std::string & value) {
++            params.evict_mode = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--evict-sink"}, "N",
++        string_format("Number of attention sink tokens to keep at start (StreamingLLM mode) (default: %d)", params.evict_sink),
++        [](common_params & params, const std::string & value) {
++            params.evict_sink = std::stoi(value);
++        }
++    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_COMPLETION}));
++    add_opt(common_arg(
++        {"--h2o-eviction"},
++        "Use H2O attention-aware eviction (Heavy-Hitter Oracle) instead of position-based",
++        [](common_params & params) {
++            params.h2o_eviction = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_COMPLETION}));
+     add_opt(common_arg(
+         {"-dt", "--defrag-thold"}, "N",
+         string_format("KV cache defragmentation threshold (DEPRECATED)"),
+diff --git a/common/common.h b/common/common.h
+index 17dc3fb..4053ae5 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -497,6 +497,10 @@ struct common_params {
+ 
+     int32_t ppl_stride      = 0;     // stride for perplexity calculations. If left at 0, the pre-existing approach will be used.
+     int32_t ppl_output_type = 0;     // = 0 -> ppl output is as usual, = 1 -> ppl output is num_tokens, ppl, one per line
++    float   evict_ratio     = 0.0f;  // KV cache eviction ratio (0.0 = no eviction, 0.9 = evict 90% of oldest tokens)
++    int     evict_mode      = 0;     // 0 = sliding window (evict oldest), 1 = StreamingLLM (keep first+last, evict middle)
++    int     evict_sink      = 128;   // number of "attention sink" tokens to always keep at the beginning (mode 1)
++    bool    h2o_eviction    = false; // use H2O attention-aware eviction (Heavy-Hitter Oracle)
+                                      //                                       (which is more convenient to use for plotting)
+                                      //
+     bool   hellaswag        = false; // compute HellaSwag score over random tasks from datafile supplied in prompt
+diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
+index 716a30f..4f8a448 100644
+--- a/tools/completion/completion.cpp
++++ b/tools/completion/completion.cpp
+@@ -32,6 +32,104 @@
+ #pragma warning(disable: 4244 4267) // possible loss of data
+ #endif
+ 
++// ============================================================================
++// H2O: Heavy-Hitter Oracle — Attention-aware KV cache eviction
++// ============================================================================
++struct h2o_state {
++    std::vector<double> scores;  // per-position cumulative attention score
++    int n_layers = 0;
++    int n_kv_max = 0;
++    int n_heads  = 0;            // total query heads
++    bool enabled = false;
++
++    void init(int layers, int kv_max, int heads) {
++        n_layers = layers;
++        n_kv_max = kv_max;
++        n_heads  = heads;
++        scores.assign(kv_max, 0.0);
++        enabled  = true;
++    }
++
++    // Accumulate attention scores from softmax output
++    // attn shape (ggml): [n_kv, n_tokens, n_head, 1] (after permute)
++    // We sum across the query dimension (n_tokens) for each KV position
++    void accumulate(const float * attn_data, int n_kv, int n_tokens, int n_head) {
++        if (!enabled || !attn_data) return;
++        // attn layout: attn[kv_pos * n_tokens * n_head + tok * n_head + head]
++        // Actually ggml stores row-major in ne[0] dimension:
++        // ne[0]=n_kv, ne[1]=n_tokens, ne[2]=n_head
++        // So attn[head][tok][kv] = attn_data[head * n_tokens * n_kv + tok * n_kv + kv]
++        for (int h = 0; h < n_head; h++) {
++            for (int t = 0; t < n_tokens; t++) {
++                const float * row = attn_data + (h * n_tokens + t) * n_kv;
++                for (int k = 0; k < n_kv && k < n_kv_max; k++) {
++                    scores[k] += (double)row[k];
++                }
++            }
++        }
++    }
++
++    // Find the token with lowest score to evict (excluding sink tokens)
++    // Returns the position to evict, or -1 if nothing to evict
++    int find_evict_target(int n_cached, int n_sink) const {
++        if (!enabled || n_cached <= n_sink) return -1;
++        int min_pos = -1;
++        double min_score = 1e30;
++        for (int i = n_sink; i < n_cached; i++) {
++            if (scores[i] < min_score) {
++                min_score = scores[i];
++                min_pos = i;
++            }
++        }
++        return min_pos;
++    }
++
++    // After evicting position `pos`, shift scores down
++    void on_evict(int pos, int n_cached) {
++        if (!enabled || pos < 0) return;
++        // Remove the evicted position and shift
++        for (int i = pos; i < n_cached - 1; i++) {
++            scores[i] = scores[i + 1];
++        }
++        scores[n_cached - 1] = 0.0;
++    }
++};
++
++static h2o_state g_h2o;
++
++// Eval callback: intercepts tensors during graph execution
++static bool h2o_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
++    (void)user_data;
++    if (!g_h2o.enabled) return true;
++
++    // We only care about the softmax output tensor
++    const char * name = ggml_get_name(t);
++    if (!name) return true;
++
++    // Match "kq_soft_max-N" where N is layer index
++    if (strncmp(name, "kq_soft_max-", 12) != 0) {
++        if (ask) return true;  // don't need this tensor
++        return true;
++    }
++
++    if (ask) return true;  // yes, we want to observe this tensor
++
++    // Tensor is ready — read attention weights
++    // Shape: [n_kv, n_tokens, n_head, 1]
++    const int n_kv     = t->ne[0];
++    const int n_tokens = t->ne[1];
++    const int n_head   = t->ne[2];
++
++    // Read data (may need to copy from GPU)
++    const size_t data_size = ggml_nbytes(t);
++    std::vector<float> buf(data_size / sizeof(float));
++    ggml_backend_tensor_get(t, buf.data(), 0, data_size);
++
++    g_h2o.accumulate(buf.data(), n_kv, n_tokens, n_head);
++
++    return true;
++}
++
+ static llama_context           ** g_ctx;
+ static llama_model             ** g_model;
+ static common_sampler          ** g_smpl;
+@@ -94,6 +192,21 @@ int main(int argc, char ** argv) {
+         return 1;
+     }
+ 
++    // H2O: set eval callback and force non-flash attention
++    if (params.h2o_eviction) {
++        if (params.evict_ratio <= 0.0f) {
++            LOG_WRN("%s: --h2o-eviction requires --evict-ratio > 0, disabling H2O\n", __func__);
++            params.h2o_eviction = false;
++        } else {
++            params.cb_eval = h2o_eval_callback;
++            params.cb_eval_user_data = nullptr;
++            // Force non-flash attention so we can intercept softmax output
++            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
++            LOG_INF("%s: H2O eviction enabled (ratio=%.0f%%, sink=%d, non-flash forced)\n",
++                    __func__, params.evict_ratio * 100.0f, params.evict_sink);
++        }
++    }
++
+     common_init();
+ 
+     auto & sparams = params.sampling;
+@@ -162,6 +275,16 @@ int main(int argc, char ** argv) {
+     llama_memory_t mem = llama_get_memory(ctx);
+     const llama_vocab * vocab = llama_model_get_vocab(model);
+ 
++    // Initialize H2O state
++    if (params.h2o_eviction) {
++        const int n_layers = llama_model_n_layer(model);
++        const int n_ctx    = llama_n_ctx(ctx);
++        const int n_heads  = llama_model_n_head(model);
++        g_h2o.init(n_layers, n_ctx, n_heads);
++        LOG_INF("%s: H2O initialized: %d layers, %d ctx, %d heads\n",
++                __func__, n_layers, n_ctx, n_heads);
++    }
++
+     // note: the time for chat template initialization is not negligible:
+     auto chat_templates = common_chat_templates_init(model, params.chat_template);
+ 
+@@ -620,27 +743,80 @@ int main(int argc, char ** argv) {
+                 // - take the n_keep first tokens from the original prompt (via n_past)
+                 // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
+ 
+-                if (n_past + (int) embd.size() >= n_ctx) {
+-                    if (!params.ctx_shift){
++                // StreamingLLM eviction: use smaller cache budget
++                const bool has_eviction = params.evict_ratio > 0.0f;
++                const int cache_budget = has_eviction
++                    ? std::max(1, (int)(n_ctx * (1.0f - params.evict_ratio)))
++                    : n_ctx;
++                const int ctx_threshold = has_eviction ? cache_budget : n_ctx;
++
++                if (n_past + (int) embd.size() >= ctx_threshold) {
++                    if (!has_eviction && !params.ctx_shift){
+                         LOG_WRN("\n\n%s: context full and context shift is disabled => stopping\n", __func__);
+                         break;
+                     }
+ 
+-                    if (params.n_predict == -2) {
++                    if (!has_eviction && params.n_predict == -2) {
+                         LOG_WRN("\n\n%s: context full and n_predict == %d => stopping\n", __func__, params.n_predict);
+                         break;
+                     }
+ 
+-                    const int n_left    = n_past - params.n_keep;
+-                    const int n_discard = n_left/2;
++                    if (has_eviction && params.h2o_eviction) {
++                        // H2O: evict tokens with lowest accumulated attention score
++                        const int sink = std::min(params.evict_sink, cache_budget / 2);
++                        int n_discard = n_past + (int) embd.size() - cache_budget;
++                        int evicted = 0;
++                        while (n_discard > 0) {
++                            int victim = g_h2o.find_evict_target(n_past, sink);
++                            if (victim < 0) break;
++                            LOG_DBG("H2O evict: pos=%d, score=%.4f, n_past=%d, budget=%d\n",
++                                    victim, g_h2o.scores[victim], n_past, cache_budget);
++                            llama_memory_seq_rm (mem, 0, victim, victim + 1);
++                            llama_memory_seq_add(mem, 0, victim + 1, n_past, -1);
++                            g_h2o.on_evict(victim, n_past);
++                            n_past--;
++                            n_discard--;
++                            evicted++;
++                        }
++                        if (evicted > 0) {
++                            LOG_DBG("H2O evicted %d tokens, n_past=%d\n", evicted, n_past);
++                        }
++                    } else if (has_eviction && params.evict_mode == 1) {
++                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
++                        const int sink = std::min(params.evict_sink, cache_budget / 2);
++                        const int n_discard = n_past + (int) embd.size() - cache_budget;
++                        if (n_discard > 0) {
++                            const int evict_start = sink;
++                            const int evict_end = evict_start + n_discard;
++                            LOG_DBG("StreamingLLM evict: n_past=%d, sink=%d, evict [%d,%d), budget=%d\n",
++                                    n_past, sink, evict_start, evict_end, cache_budget);
++                            llama_memory_seq_rm (mem, 0, evict_start, evict_end);
++                            llama_memory_seq_add(mem, 0, evict_end, n_past, -n_discard);
++                            n_past -= n_discard;
++                        }
++                    } else if (has_eviction) {
++                        // Sliding window eviction: evict oldest (after sink)
++                        const int n_discard = n_past + (int) embd.size() - cache_budget;
++                        if (n_discard > 0) {
++                            LOG_DBG("sliding evict: n_past=%d, evict [0,%d), budget=%d\n",
++                                    n_past, n_discard, cache_budget);
++                            llama_memory_seq_rm (mem, 0, 0, n_discard);
++                            llama_memory_seq_add(mem, 0, n_discard, n_past, -n_discard);
++                            n_past -= n_discard;
++                        }
++                    } else {
++                        // Original context shifting
++                        const int n_left    = n_past - params.n_keep;
++                        const int n_discard = n_left/2;
+ 
+-                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
+-                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++                        LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
++                                n_past, n_left, n_ctx, params.n_keep, n_discard);
+ 
+-                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
+-                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++                        llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
++                        llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
+ 
+-                    n_past -= n_discard;
++                        n_past -= n_discard;
++                    }
+ 
+                     LOG_DBG("after swap: n_past = %d\n", n_past);
+ 
