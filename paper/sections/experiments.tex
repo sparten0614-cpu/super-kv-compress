@@ -346,7 +346,7 @@ q4\_0/q4\_0 + 70\% evict & 11.85x & +6.30\% & 60\% & Aggressive \\
 \end{figure}
 
 \paragraph{Key Finding 8: The NIAH cliff has no middle ground.}
-Across all 27 valid configurations, NIAH is either 100\% (no eviction) or 60\% (any eviction at $\geq$50\%). There is no configuration achieving, e.g., 80\% NIAH --- the transition is binary. This further confirms the causal limitation: even modest eviction destroys retrieval for tokens in the evicted region.
+The Pareto frontier (Figure~\ref{fig:pareto}) reveals a binary NIAH transition: across all 27 valid configurations, NIAH is either 100\% (no eviction) or 60\% (any eviction at $\geq$50\%). There is no configuration achieving, e.g., 80\% NIAH --- the transition is binary. This further confirms the causal limitation: even modest eviction destroys retrieval for tokens in the evicted region.
 
 \paragraph{Key Finding 9: Additivity enables Pareto prediction.}
 All 27 joint (K,V) results are predictable from the 6 single-component measurements ($\delta_K$ and $\delta_V$ per quant type) within $\pm$0.1\% accuracy. This means the full Pareto frontier for \emph{any} new model can be predicted from $O(2n)$ calibration runs instead of $O(n^2)$ exhaustive search --- a critical efficiency gain for the AutoResearch pipeline (\S\ref{sec:conclusion}).
