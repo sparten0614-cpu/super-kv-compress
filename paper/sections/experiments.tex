@@ -60,7 +60,7 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
  & FP16       & 5.660  & ---       & 100\% & 1x \\
  & q8\_0      & 5.548  & $-$1.98\% & 100\% & 2x \\
  & q4\_0      & \textbf{6616}  & \textbf{+116,855\%} & \textbf{0\%} & 4x \\
- & q4\_1      & \textbf{8392}  & catastrophic & TBD & 4x \\
+ & q4\_1      & \textbf{8392}  & catastrophic & \textbf{0\%} & 4x \\
 \midrule
 \multirow{2}{*}{Ministral-8B}
  & FP16       & 9.334  & ---       & 100\% & 1x \\
@@ -70,12 +70,12 @@ Llama-3.3-70B$^\dagger$ & q8\_0 & 3.720  & ---       & 100\% & 2x \\
               & q4\_0  & 3.838  & +3.17\%   & 100\% & 4x \\
 \bottomrule
 \end{tabular}
-\caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at 4-bit. $^\dagger$70B FP16 baseline OOM at 16K; q8\_0 used as reference.}
+\caption{Quantization-only results across models. Quantization is NIAH-safe for GQA 4:1 models (Llama, Mistral) but \textbf{catastrophically fails} on Qwen2.5-7B (GQA 7:1) at \emph{any} 4-bit format (both q4\_0 and q4\_1). $^\dagger$70B FP16 baseline OOM at 16K; q8\_0 used as reference.}
 \label{tab:quant-baseline}
 \end{table}
 
 \paragraph{Key Finding 1: Quantization safety is GQA-dependent.}
-Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL increase and 100\% NIAH. Qwen (GQA 7:1, $n_\text{kv}=4$) catastrophically fails at q4\_0 (PPL 6616, NIAH 0\%) while q8\_0 is normal (PPL 5.548). This establishes that \textbf{quantization safety is not universal}---it depends on both GQA ratio and bit width.
+Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL increase and 100\% NIAH. Qwen (GQA 7:1, $n_\text{kv}=4$) catastrophically fails at \emph{any} 4-bit format---both q4\_0 (PPL 6616, NIAH 0\%) and q4\_1 (PPL 8392, NIAH 0\%)---while q8\_0 is normal (PPL 5.548). This establishes that \textbf{quantization safety is not universal}---it depends on both GQA ratio and bit width, with the failure boundary at 4 bits for high-GQA architectures.
 
 %% ============================================================
 \subsection{Experiment 2: Qwen Failure Analysis --- K-Quantization as Root Cause}
