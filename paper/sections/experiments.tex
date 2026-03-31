@@ -59,7 +59,7 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
 \multirow{4}{*}{Qwen2.5-7B}
  & FP16       & 5.660  & ---       & 100\% & 1x \\
  & q8\_0      & 5.548  & $-$1.98\% & 100\% & 2x \\
- & q4\_0      & \textbf{6615}  & \textbf{+116,796\%} & \textbf{0\%} & 4x \\
+ & q4\_0      & \textbf{6616}  & \textbf{+116,855\%} & \textbf{0\%} & 4x \\
  & q4\_1      & \textbf{8392}  & catastrophic & TBD & 4x \\
 \midrule
 \multirow{2}{*}{Ministral-8B}
@@ -75,7 +75,7 @@ Llama-3.3-70B$^\dagger$ & q8\_0 & 3.720  & ---       & 100\% & 2x \\
 \end{table}
 
 \paragraph{Key Finding 1: Quantization safety is GQA-dependent.}
-Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL increase and 100\% NIAH. Qwen (GQA 7:1, $n_\text{kv}=4$) catastrophically fails at q4\_0 (PPL 6615, NIAH 0\%) while q8\_0 is normal (PPL 5.548). This establishes that \textbf{quantization safety is not universal}---it depends on both GQA ratio and bit width.
+Llama and Mistral (GQA 4:1, $n_\text{kv}=8$) tolerate q4\_0 with $\leq$3\% PPL increase and 100\% NIAH. Qwen (GQA 7:1, $n_\text{kv}=4$) catastrophically fails at q4\_0 (PPL 6616, NIAH 0\%) while q8\_0 is normal (PPL 5.548). This establishes that \textbf{quantization safety is not universal}---it depends on both GQA ratio and bit width.
 
 %% ============================================================
 \subsection{Experiment 2: Qwen Failure Analysis --- K-Quantization as Root Cause}
@@ -200,7 +200,7 @@ ExpAttn (multi-layer) 85\% & 6.7x & --- & \textbf{0\%} & --- \\
 \end{table}
 
 \paragraph{Key Finding 5: The fundamental causal limitation of eviction.}
-Four distinct scoring strategies all fail at high eviction rates: StreamingLLM (position-based), H\textsubscript{2}O (attention-based), and Expected Attention with both single-layer and multi-layer K-statistics (attention-proxy). At 85\% eviction, StreamingLLM achieves 20\% NIAH, while both Expected Attention variants achieve 0\%. This is not a method-specific failure---it is a \textbf{fundamental causal limitation}. Eviction decisions are made during prefill (past), but the needle's importance depends on the future query. No retrospective scoring---whether based on accumulated attention, recency, frequency, or K-vector statistics---can identify tokens that will be important for \emph{unknown} future queries. K-statistics-based scoring (Expected Attention) performs even worse than attention-based scoring (H\textsubscript{2}O), confirming that attention proxies are strictly inferior to actual attention for eviction decisions.
+Four distinct scoring strategies all fail at high eviction rates: StreamingLLM (position-based), H\textsubscript{2}O (attention-based), and Expected Attention with both single-layer and multi-layer K-statistics (attention-proxy). At 85\% eviction, StreamingLLM achieves 20\% NIAH, while both Expected Attention variants achieve 0\%. This is not a method-specific failure---it is a \textbf{fundamental causal limitation}. Eviction decisions are made during prefill (past), but the needle's importance depends on the future query. No retrospective scoring---whether based on accumulated attention, recency, frequency, or K-vector statistics---can identify tokens that will be important for \emph{unknown} future queries. K-statistics-based scoring (Expected Attention) performs even worse than position-based scoring (StreamingLLM) at 50\% eviction (40\% vs.\ 60\% NIAH). We attribute this to Expected Attention's global K-statistics failing to capture the importance of attention sink tokens---the initial tokens that StreamingLLM preserves by construction. This confirms that attention proxies based on K-vector statistics are strictly inferior to both actual attention scores and even simple position-based heuristics for eviction decisions.
 
 \paragraph{Key Finding 6: PPL $\neq$ NIAH.}
 At 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops to 60\%. This confirms that PPL and retrieval quality are \textbf{orthogonal dimensions}---optimizing for PPL can actively harm retrieval. This is the core of the ``metric gap'' (\S\ref{sec:exp-metric-gap}).
@@ -261,7 +261,7 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 3.3x (70\% evict) & +1.04\% & 40\% & TBD & PPL mild, NIAH severe \\
 6.7x (85\% evict) & +7.50\% & 20\% & TBD & Both metrics degrade \\
 \midrule
-4x (q4\_0 Qwen) & +116,796\% & 0\% & N/A & Architecture-dependent failure \\
+4x (q4\_0 Qwen) & +116,855\% & 0\% & N/A & Architecture-dependent failure \\
 \bottomrule
 \end{tabular}
 \caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression.}
@@ -272,7 +272,7 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 Three failure modes of PPL as a metric:
 \begin{enumerate}
     \item \textbf{False positive:} 50\% eviction improves PPL ($-$0.09\%) but destroys retrieval (NIAH 60\%). A researcher using only PPL would conclude eviction is free.
-    \item \textbf{Insensitivity to architecture:} Qwen q4\_0 has PPL 6615 while Llama q4\_0 has PPL 6.348---a 1000x difference invisible without cross-model testing.
+    \item \textbf{Insensitivity to architecture:} Qwen q4\_0 has PPL 6616 while Llama q4\_0 has PPL 6.348---a 1000x difference invisible without cross-model testing.
     \item \textbf{Orthogonality:} Quantization and eviction produce opposite PPL--NIAH signatures. Quantization: PPL degrades, NIAH holds. Eviction: PPL holds (or improves), NIAH degrades.
 \end{enumerate}
 

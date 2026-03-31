@@ -30,8 +30,8 @@
 
 \begin{abstract}
 We conduct a systematic empirical study of KV cache compression across five LLMs (Llama-3.1-8B, Llama-3.3-70B, Mistral-7B, Qwen2.5-7B, Ministral-8B), revealing three findings that challenge prevailing assumptions.
-First, \textbf{quantization safety is architecture-dependent}: 4-bit KV quantization is lossless on GQA 4:1 models (Llama, Mistral) but catastrophically fails on GQA 7:1 models (Qwen: PPL 5.6$\to$6615, NIAH 100\%$\to$0\%), with K-quantization---not V---as the root cause.
-Second, \textbf{eviction has a fundamental causal limitation}: both H\textsubscript{2}O and StreamingLLM produce identical NIAH degradation (100\%$\to$60\% at 50\% eviction) because eviction decisions at prefill time cannot anticipate future queries---a limitation we prove is information-theoretic, not algorithmic.
+First, \textbf{quantization safety is architecture-dependent}: 4-bit KV quantization is lossless on GQA 4:1 models (Llama, Mistral) but catastrophically fails on GQA 7:1 models (Qwen: PPL 5.6$\to$6616, NIAH 100\%$\to$0\%), with K-quantization---not V---as the root cause.
+Second, \textbf{eviction has a fundamental causal limitation}: four scoring strategies---position-based (StreamingLLM), attention-based (H\textsubscript{2}O), and K-statistics-based (Expected Attention, single- and multi-layer)---all fail at high eviction rates, with Expected Attention achieving 0\% NIAH at 85\% eviction. This limitation is information-theoretic, not algorithmic: eviction decisions at prefill time cannot anticipate future queries.
 Third, \textbf{perplexity is an unreliable proxy}: at 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops from 100\% to 60\%, creating a dangerous false positive for researchers using PPL alone.
 We show that K and V quantization errors are \textbf{additive} (predicted +3.13\% vs.\ measured +3.14\%), reducing calibration cost from $O(n^2)$ to $O(2n)$ configurations.
 We propose GQA-aware asymmetric quantization (K$\geq$8-bit for high GQA ratios, V safe at 4-bit universally) and recommend dual-metric reporting (PPL + retrieval) as the minimum standard for KV cache compression evaluation.
