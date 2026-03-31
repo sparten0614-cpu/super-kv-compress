@@ -554,7 +554,97 @@ The eviction threshold $\tau_1$ corresponds exactly to the water level $\theta$:
 
 ---
 
-## 12. Summary
+## 12. Phase 3 Directions: Beyond Scalar Quantization + Eviction
+
+> **Added 2026-03-31.** Explores "change what you store" paradigm shifts that can push compression beyond the Phase 2 ceiling.
+
+Historical precedent: breakthrough compression ratios come not from optimizing within a framework, but from changing the representation itself (pixels → transform coefficients, point clouds → neural fields, raw audio → codec tokens).
+
+### 12.1 Direction 1: Vector Quantization (Priority: ★★★★★)
+
+**Concept:** Replace per-dimension scalar Lloyd-Max quantization with learned vector quantization. Instead of storing $d$ scalar codes, store a single codebook index.
+
+**Information-theoretic motivation:** Scalar quantization wastes ~40% of the rate budget (§11.2, $\eta = 60\%$). This is a well-known result — the "space-filling loss" of scalar vs vector quantization is $\approx 1.53$ dB for Gaussian sources (Conway & Sloane). VQ can close this gap entirely.
+
+**Compression analysis:**
+
+| Method | Bits/dim | Compression vs FP16 | Distortion |
+|--------|----------|---------------------|------------|
+| Scalar 6-bit (current) | 6.0 | 2.67x | $c_6 \sigma^2 = 0.0066\sigma^2$ |
+| Scalar 4-bit (current V) | 4.0 | 4.0x | $c_4 \sigma^2 = 0.0357\sigma^2$ |
+| VQ Shannon-optimal | 3.62 | 4.42x | $0.0066\sigma^2$ (same as 6-bit!) |
+| Product VQ (PQ, M=8) | ~4.0 | 4.0x | ~$0.01\sigma^2$ |
+| Residual VQ (RVQ, 2-stage) | ~3.5 | 4.57x | ~$0.008\sigma^2$ |
+
+**Key insight:** VQ at 3.62 bits/dim achieves the **same distortion** as scalar 6-bit — free 1.66x compression improvement with zero quality loss.
+
+**Impact on total compression:**
+- Phase 2 (scalar K6V4 + eviction): ~13x PPL ceiling
+- Phase 3 (VQ + eviction): $(6/3.62) \times 13 \approx$ **21x PPL ceiling** (matches Shannon bound §11.3)
+- Phase 3 (VQ + eviction, task metrics): $(6/3.62) \times 64 \approx$ **106x task ceiling**
+
+**Implementation path:**
+1. Product Quantization (PQ): split 128-dim into M=8 sub-vectors of 16-dim, codebook per sub-space. Well-understood, used in FAISS.
+2. Residual VQ (RVQ): multi-stage refinement. Used in audio codecs (SoundStream, Encodec).
+3. Learned VQ: end-to-end trained codebook. Requires calibration data but matches the TurboQuant offline calibration paradigm.
+
+**Compatibility with Phase 2:** Drop-in replacement for the quantization layer. The four-tier framework, eviction logic, and all error bounds remain valid — only $c_b$ coefficients change (improve). No architectural changes needed.
+
+### 12.2 Direction 2: Eviction → Merge (Priority: ★★★☆☆)
+
+**Concept:** Instead of discarding evicted tokens entirely (0 bits), merge groups of low-attention tokens into "summary tokens" that preserve aggregate information.
+
+**Formulation:** For a set of evicted tokens $\mathcal{E}$ with KV pairs $\{(k_j, v_j)\}_{j \in \mathcal{E}}$, compute $m \ll |\mathcal{E}|$ summary tokens:
+
+$$k_{\text{summary}}^{(i)} = \sum_{j \in \mathcal{E}_i} w_j k_j, \quad v_{\text{summary}}^{(i)} = \sum_{j \in \mathcal{E}_i} w_j v_j$$
+
+where $\{w_j\}$ are attention-weight-proportional merge weights and $\mathcal{E}_1, \ldots, \mathcal{E}_m$ partition $\mathcal{E}$.
+
+**Compression analysis:**
+- Pure eviction of 75% tokens: 4x eviction, 0 bits for evicted
+- Merge 75% into 5% summary tokens: effective 3.75x eviction, but retains aggregate information
+- Error reduction: $E_{\text{merge}} \leq E_{\text{evict}} / \sqrt{|\mathcal{E}|/m}$ (averaging reduces noise)
+
+**Connection to prior work:** Token merging is used in vision transformers (ToMe, 2023) for compute reduction. Applying it to KV cache for memory reduction is novel.
+
+**Impact on total compression:**
+- Merge doesn't change the compression ratio much (summary tokens still cost bits)
+- But it relaxes the eviction quality constraint → can evict more aggressively → higher compression at same quality
+- Estimated: eviction cliff shifts from 75% to 85-90% at 128K → total PPL ceiling from 13x to ~17-20x
+
+**Implementation complexity:** Moderate. Requires k-means or attention-weighted clustering at eviction time. Adds O(n) compute per eviction step.
+
+### 12.3 Direction 3: Neural Implicit Compression (Priority: ★★☆☆☆)
+
+**Concept:** Train a small MLP to memorize the KV cache: $f_\theta(\text{layer}, \text{head}, \text{position}) \rightarrow (k, v)$. Store $\theta$ instead of the KV entries.
+
+**Compression analysis:**
+- KV cache for $n=128K$, $H=8$ (GQA), $L=32$: $128K \times 8 \times 32 \times 2 \times 128 = 8.4B$ values
+- MLP with 1M parameters: compression $= 8400\times$
+- But reconstruction MSE depends on network capacity and training convergence
+
+**Theoretical limit:** By the universal approximation theorem, an MLP can memorize any finite dataset to arbitrary precision given sufficient parameters. The question is the parameter-distortion trade-off:
+
+$$D(\theta) \propto \frac{n \cdot d}{|\theta|^{2/d_{\text{hidden}}}}$$
+
+This is extremely favorable for high compression but **training latency is prohibitive** for online inference (minutes per context window).
+
+**Potential niche:** Offline KV cache compression for stored conversations or document caches that are loaded repeatedly. Not suitable for streaming inference.
+
+### 12.4 Phase 3 Roadmap
+
+| Phase | Method | PPL ceiling | Task ceiling | Timeline |
+|-------|--------|-------------|-------------|----------|
+| **2 (current)** | Scalar quant + eviction | 13x | 30-64x | Now |
+| **3a** | VQ replacement | **21x** | **50-106x** | +2-4 weeks |
+| **3b** | + Eviction→Merge | **~20x** | **60-100x** | +4-6 weeks |
+| **3c** | + Neural implicit (offline) | **100x+** (offline only) | — | Research |
+
+**Phase 3a is the clear next step:** it closes the 40% coding efficiency gap identified in §11.2 with a well-understood technique (PQ/RVQ), requires no architectural changes, and is fully compatible with the four-tier framework.
+
+---
+
+## 13. Summary
 
 The unified error bound provides three key contributions:
 
