@@ -169,7 +169,7 @@ K=q4\_0, V=FP16 & 3.12x & +2.9\% & K quantization only \\
 \end{figure}
 
 \paragraph{Key Finding 3: Eviction cliff scales with model size and context.}
-All models exhibit a convex PPL curve with a ``cliff'' (Figure~\ref{fig:eviction-gradient}), but its position varies dramatically: Llama-8B at $\sim$67\% (16K), Mistral-7B at $\sim$85\% (16K), and Llama-70B shows \textbf{no cliff up to 70\% eviction at 16K} (PPL improves at both 50\% and 70\%). The same 70B model at 4K context shows +26\% at 50\% eviction---confirming that context length is the dominant factor, not model quality. The cliff shifts right with both longer context ($f(n) = 0.277 + 0.0405 \ln(n)$) and larger model scale. Notably, the 70B cliff appears at $\sim$85\% eviction (+3.12\% PPL), confirming that larger models tolerate significantly more aggressive eviction before quality degrades.
+All models exhibit a convex PPL curve with a ``cliff'' (Figure~\ref{fig:eviction-gradient}), but its position varies dramatically: Llama-8B at $\sim$67\% (16K), Mistral-7B at $\sim$85\% (16K), and Llama-70B shows \textbf{no cliff up to 70\% eviction at 16K} (PPL improves at both 50\% and 70\%). The same 70B model at 4K context shows +26\% at 50\% eviction---confirming that context length is the dominant factor, not model quality. The cliff shifts right with both longer context ($f(n) = 0.277 + 0.0405 \ln(n)$) and larger model scale. Notably, the 70B cliff appears at $\sim$85\% eviction (+3.12\% PPL), confirming that larger models tolerate significantly more aggressive eviction before quality degrades. At 32K context, the cliff exceeds 85\% (PPL +0.04\% at 85\% eviction)---far beyond the log-formula prediction of 70\%, suggesting that context redundancy grows super-logarithmically and the scaling formula underestimates eviction tolerance at long contexts.
 
 \paragraph{Key Finding 4: PPL can \emph{improve} under moderate eviction.}
 At 30--70\% eviction on 16K context, both Llama-8B and Llama-70B show PPL \emph{improvement} (up to $-$0.32\% for 70B at 50\%). This counterintuitive result suggests that evicted tokens add noise to the attention distribution; removing them is beneficial for average prediction quality. This is precisely why PPL is misleading for eviction---it rewards compression that harms retrieval (\S\ref{sec:exp-metric-gap}).
@@ -305,10 +305,10 @@ We recommend \textbf{dual-metric reporting} (PPL + NIAH or equivalent retrieval 
 512   & 53\% & 6.0x  & 53\% (fit) \\
 4,096 & $\sim$55\% & 6.5x  & 61\% \\
 16,384 & $\sim$67\% & 8.9x & 67\% (fit) \\
-32,768 & $>$70\%$^\dagger$ & $>$10x & 70\% \\
+32,768 & $>$85\% & $>$13x & 70\%$^\dagger$ \\
 \bottomrule
 \end{tabular}
-\caption{Context length scaling for Llama StreamingLLM. The 1\% PPL cliff follows $f(n) = 0.277 + 0.0405 \ln(n)$. Longer contexts permit more aggressive eviction. $^\dagger$At 32K, PPL still \emph{improves} at 70\% eviction ($-$0.39\%); cliff awaiting 85\% result.}
+\caption{Context length scaling for Llama StreamingLLM. The 1\% PPL cliff follows $f(n) = 0.277 + 0.0405 \ln(n)$ up to 16K. $^\dagger$At 32K, the actual cliff ($>$85\%) far exceeds the log-formula prediction (70\%), suggesting context redundancy grows super-logarithmically at long contexts.}
 \label{tab:context-scaling}
 \end{table}
 
