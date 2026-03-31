@@ -53,10 +53,10 @@ index 17dc3fb..4053ae5 100644
                                       //
      bool   hellaswag        = false; // compute HellaSwag score over random tasks from datafile supplied in prompt
 diff --git a/tools/completion/completion.cpp b/tools/completion/completion.cpp
-index 716a30f..cdd3941 100644
+index 716a30f..9ad3c61 100644
 --- a/tools/completion/completion.cpp
 +++ b/tools/completion/completion.cpp
-@@ -32,6 +32,136 @@
+@@ -32,6 +32,144 @@
  #pragma warning(disable: 4244 4267) // possible loss of data
  #endif
  
@@ -157,6 +157,7 @@ index 716a30f..cdd3941 100644
 +};
 +
 +static h2o_state g_h2o;
++static int g_h2o_callback_count = 0;  // debug: count callback invocations
 +
 +// Eval callback: intercepts tensors during graph execution
 +static bool h2o_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
@@ -180,6 +181,13 @@ index 716a30f..cdd3941 100644
 +    const int n_tokens = t->ne[1];
 +    const int n_head   = t->ne[2];
 +
++    // Debug: log first few callback invocations
++    g_h2o_callback_count++;
++    if (g_h2o_callback_count <= 5 || g_h2o_callback_count % 100 == 0) {
++        LOG_INF("H2O callback #%d: tensor=%s shape=[%d,%d,%d] type=%d\n",
++                g_h2o_callback_count, name, n_kv, n_tokens, n_head, (int)t->type);
++    }
++
 +    // Read data (may need to copy from GPU)
 +    const size_t data_size = ggml_nbytes(t);
 +    std::vector<float> buf(data_size / sizeof(float));
@@ -193,7 +201,7 @@ index 716a30f..cdd3941 100644
  static llama_context           ** g_ctx;
  static llama_model             ** g_model;
  static common_sampler          ** g_smpl;
-@@ -94,6 +224,21 @@ int main(int argc, char ** argv) {
+@@ -94,6 +232,21 @@ int main(int argc, char ** argv) {
          return 1;
      }
  
@@ -215,7 +223,7 @@ index 716a30f..cdd3941 100644
      common_init();
  
      auto & sparams = params.sampling;
-@@ -162,6 +307,16 @@ int main(int argc, char ** argv) {
+@@ -162,6 +315,16 @@ int main(int argc, char ** argv) {
      llama_memory_t mem = llama_get_memory(ctx);
      const llama_vocab * vocab = llama_model_get_vocab(model);
  
@@ -232,7 +240,7 @@ index 716a30f..cdd3941 100644
      // note: the time for chat template initialization is not negligible:
      auto chat_templates = common_chat_templates_init(model, params.chat_template);
  
-@@ -620,27 +775,83 @@ int main(int argc, char ** argv) {
+@@ -620,27 +783,102 @@ int main(int argc, char ** argv) {
                  // - take the n_keep first tokens from the original prompt (via n_past)
                  // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
  
@@ -263,14 +271,38 @@ index 716a30f..cdd3941 100644
 +                        // H2O: batch evict tokens with lowest accumulated attention score
 +                        const int sink = std::min(params.evict_sink, cache_budget / 2);
 +                        const int n_discard = n_past + (int) embd.size() - cache_budget;
-+                        if (n_discard > 0) {
-+                            // Use batch_evict: sorts scores, removes lowest N, updates score array
-+                            // batch_evict returns victims in ascending order and already
-+                            // updates the scores array (removes back-to-front internally)
-+                            auto victims = g_h2o.batch_evict(n_past, sink, n_discard);
 +
-+                            // Remove from KV cache: process back-to-front so earlier
-+                            // positions don't shift before we remove them
++                        // DEBUG: print score statistics before eviction
++                        {
++                            double min_s = 1e30, max_s = -1e30, sum_s = 0;
++                            int nonzero = 0;
++                            for (int i = 0; i < n_past; i++) {
++                                double s = g_h2o.scores[i];
++                                if (s < min_s) min_s = s;
++                                if (s > max_s) max_s = s;
++                                sum_s += s;
++                                if (s > 0) nonzero++;
++                            }
++                            LOG_INF("H2O EVICTION BRANCH: n_past=%d, n_discard=%d, budget=%d, sink=%d, "
++                                    "callbacks=%d, scores: min=%.4f max=%.4f avg=%.4f nonzero=%d/%d\n",
++                                    n_past, n_discard, cache_budget, sink, g_h2o_callback_count,
++                                    min_s, max_s, (n_past > 0 ? sum_s/n_past : 0), nonzero, n_past);
++                        }
+ 
+-                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
+-                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++                        if (n_discard > 0) {
++                            auto victims = g_h2o.batch_evict(n_past, sink, n_discard);
+ 
+-                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
+-                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++                            // DEBUG: print first/last few victim positions and scores
++                            if (!victims.empty()) {
++                                LOG_INF("H2O victims: first=%d last=%d count=%d\n",
++                                        victims.front(), victims.back(), (int)victims.size());
++                            }
+ 
+-                    n_past -= n_discard;
 +                            int remaining = n_past;
 +                            for (int i = (int)victims.size() - 1; i >= 0; i--) {
 +                                const int pos = victims[i];
@@ -279,8 +311,8 @@ index 716a30f..cdd3941 100644
 +                                remaining--;
 +                            }
 +                            n_past = remaining;
-+                            LOG_DBG("H2O batch evicted %d tokens (budget=%d, sink=%d), n_past=%d\n",
-+                                    (int)victims.size(), cache_budget, sink, n_past);
++                            LOG_INF("H2O batch evicted %d tokens, n_past now=%d\n",
++                                    (int)victims.size(), n_past);
 +                        }
 +                    } else if (has_eviction && params.evict_mode == 1) {
 +                        // StreamingLLM: keep first `sink` tokens + most recent tokens, evict middle
@@ -309,18 +341,13 @@ index 716a30f..cdd3941 100644
 +                        // Original context shifting
 +                        const int n_left    = n_past - params.n_keep;
 +                        const int n_discard = n_left/2;
- 
--                    LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
--                            n_past, n_left, n_ctx, params.n_keep, n_discard);
++
 +                        LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
 +                                n_past, n_left, n_ctx, params.n_keep, n_discard);
- 
--                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
--                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
++
 +                        llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
 +                        llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
- 
--                    n_past -= n_discard;
++
 +                        n_past -= n_discard;
 +                    }
  
