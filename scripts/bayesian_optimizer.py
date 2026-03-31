@@ -135,24 +135,65 @@ class BayesianKVOptimizer:
         os.makedirs(outdir, exist_ok=True)
 
     def evaluate(self, config: Config) -> Result:
-        """Run PPL + NIAH for a config."""
+        """Run tiered evaluation for a config.
+
+        Uses TieredEvaluator for progressive screening:
+          T1 (512 PPL) → T2 (4K PPL + NIAH) → T3 (full 16K eval)
+        Configs rejected at earlier tiers save significant time.
+        Falls back to direct evaluation if tiered_eval is not available.
+        """
         comp = compression_ratio(config.quant_k, config.quant_v, config.evict_ratio)
         print(f"  Eval: {config.label()} (compression={comp:.2f}x)")
 
-        ppl = run_ppl(self.model, self.wiki, self.ctx, self.chunks, self.ngl,
-                      config.quant_k, config.quant_v, config.evict_ratio,
-                      config.evict_method, config.skip_layers, self.perplexity_bin)
-
-        niah_acc = None
-        if not self.skip_niah and ppl is not None:
-            niah_acc = run_niah(self.model, self.ctx, self.ngl,
-                               config.quant_k, config.quant_v,
-                               config.evict_ratio, config.evict_method,
-                               config.skip_layers, self.niah_script)
-
+        ppl = None
         ppl_delta = None
-        if ppl is not None and self.baseline_ppl is not None:
-            ppl_delta = (ppl - self.baseline_ppl) / self.baseline_ppl * 100
+        niah_acc = None
+
+        try:
+            from tiered_eval import TieredEvaluator
+
+            if not hasattr(self, '_tiered_evaluator'):
+                baselines = {}
+                if self.baseline_ppl:
+                    baselines[3] = self.baseline_ppl
+                self._tiered_evaluator = TieredEvaluator(
+                    model_path=self.model, wiki_path=self.wiki,
+                    perplexity_bin=self.perplexity_bin,
+                    niah_script=self.niah_script, ngl=self.ngl,
+                    baselines=baselines,
+                )
+                if not baselines:
+                    self._tiered_evaluator.establish_baselines()
+                    # Update our baseline from T3 if available
+                    if 3 in self._tiered_evaluator.baselines and self.baseline_ppl is None:
+                        self.baseline_ppl = self._tiered_evaluator.baselines[3]
+
+            max_tier = 2 if self.skip_niah else 3
+            eval_result = self._tiered_evaluator.evaluate(
+                quant_k=config.quant_k, quant_v=config.quant_v,
+                evict_ratio=config.evict_ratio, evict_method=config.evict_method,
+                skip_layers=config.skip_layers, max_tier=max_tier,
+            )
+
+            ppl = eval_result.best_ppl()
+            niah_acc = eval_result.best_niah()
+            if ppl is not None and self.baseline_ppl is not None:
+                ppl_delta = (ppl - self.baseline_ppl) / self.baseline_ppl * 100
+
+        except ImportError:
+            # Fallback: direct single-tier evaluation
+            ppl = run_ppl(self.model, self.wiki, self.ctx, self.chunks, self.ngl,
+                          config.quant_k, config.quant_v, config.evict_ratio,
+                          config.evict_method, config.skip_layers, self.perplexity_bin)
+
+            if not self.skip_niah and ppl is not None:
+                niah_acc = run_niah(self.model, self.ctx, self.ngl,
+                                   config.quant_k, config.quant_v,
+                                   config.evict_ratio, config.evict_method,
+                                   config.skip_layers, self.niah_script)
+
+            if ppl is not None and self.baseline_ppl is not None:
+                ppl_delta = (ppl - self.baseline_ppl) / self.baseline_ppl * 100
 
         result = Result(config=config, compression=comp,
                         ppl=ppl, ppl_delta=ppl_delta, niah=niah_acc)
