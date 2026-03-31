@@ -110,7 +110,25 @@ K=q4\_0 with V=FP16 produces PPL 9694---confirming that \textbf{K-quantization a
 \end{enumerate}
 
 \paragraph{Key Finding 2b: V is robust, K is fragile.}
-The asymmetric diagnostic (Table~\ref{tab:qwen-diagnostic}) reveals a clean separation: V=q4\_0 with any K precision produces normal PPL (5.577--5.578), while K=q4\_0 with any V precision is catastrophic (6616--9694). This is because K errors enter the softmax nonlinearity ($\text{softmax}(QK^T/\sqrt{d})$) where they distort the entire attention distribution, while V errors are merely linearly averaged. The optimal Qwen config is K=q8\_0, V=q4\_0 ($\sim$2.5$\times$ compression, PPL 5.578).
+The asymmetric diagnostic (Table~\ref{tab:qwen-diagnostic}) reveals a clean separation: V=q4\_0 with any K precision produces normal PPL (5.577--5.578), while K=q4\_0 with any V precision is catastrophic (6616--9694). On Llama-8B (GQA 4:1), where neither component causes catastrophic failure, we can quantify the sensitivity difference directly:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Config (+ 50\% eviction)} & \textbf{$\rho$} & \textbf{PPL $\Delta$} & \textbf{Component} \\
+\midrule
+K=FP16, V=q4\_0 & 3.12x & +1.0\% & V quantization only \\
+K=q4\_0, V=FP16 & 3.12x & +2.9\% & K quantization only \\
+\midrule
+\multicolumn{2}{l}{\textbf{Sensitivity ratio}} & \textbf{2.9$\times$} & K is 2.9$\times$ more sensitive \\
+\bottomrule
+\end{tabular}
+\caption{K vs V quantization sensitivity at matched compression. K-quantization costs 2.9$\times$ more PPL than V-quantization on Llama-8B, confirming that K errors are amplified by the softmax nonlinearity while V errors are linearly averaged.}
+\label{tab:kv-sensitivity}
+\end{table}
+
+\noindent This is because K errors enter the softmax nonlinearity ($\text{softmax}(QK^T/\sqrt{d})$) where they distort the entire attention distribution, while V errors are merely linearly averaged. The optimal Qwen config is K=q8\_0, V=q4\_0 ($\sim$2.5$\times$ compression, PPL 5.578).
 
 \paragraph{Mitigation: GQA-aware asymmetric quantization.}
 \begin{itemize}
