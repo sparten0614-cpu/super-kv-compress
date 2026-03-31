@@ -4,52 +4,56 @@
 \subsection{KV Cache Quantization}
 
 \paragraph{Uniform quantization.}
-KIVI~\citep{kivi2024} applies 2-bit quantization to both Keys and Values, achieving $\sim$8$\times$ compression but with 1--3\% perplexity degradation.
-KVQuant~\citep{kvquant2024} uses per-channel quantization with outlier handling, improving quality at 4-bit.
-Both methods use uniform bit allocation across Keys and Values, missing the opportunity for asymmetric allocation.
+KIVI~\citep{kivi2024} applies 2-bit quantization to both Keys and Values, achieving $\sim$8$\times$ compression with 1--3\% PPL degradation.
+KVQuant~\citep{kvquant2024} uses per-channel quantization with outlier handling.
+Both apply uniform bit allocation across K and V; neither examines the interaction between GQA ratio and quantization safety.
 
 \paragraph{Rotation-based quantization.}
-QuIP\#~\citep{quip2024} and TurboQuant apply Hadamard rotation before quantization to reduce outlier sensitivity.
-The rotation makes entries approximately i.i.d.\ Gaussian, enabling near-optimal Lloyd-Max scalar quantization.
-QJL~\citep{qjl2024} uses Johnson-Lindenstrauss projections for Key compression specifically, providing theoretical guarantees via the JL lemma.
-Our work builds on the TurboQuant rotation framework but extends it with asymmetric K/V allocation and integration with eviction.
+TurboQuant~\citep{turboquant2026} (Google) applies Hadamard rotation to make entries approximately i.i.d.\ Gaussian before Lloyd-Max scalar quantization, approaching Shannon rate-distortion limits.
+Community reproductions have found that the paper's recommended QJL rotation for Keys actually \emph{hurts} due to softmax-amplified variance, with plain MSE quantization outperforming QJL---consistent with our finding that K-quantization errors are disproportionately amplified.
 
-\paragraph{Asymmetric quantization.}
-KVTuner~\citep{kvtuner2025} (ICML 2025) studies the sensitivity difference between Keys and Values, concluding that Keys are $\sim$2$\times$ more sensitive due to softmax nonlinearity.
-Our experiments reveal a more nuanced picture: while Keys have higher \emph{sensitivity} (per-bit impact on attention logits), Values have a sharper \emph{quality cliff} between 2-bit and 4-bit due to the limited codebook size at very low bit-widths.
-The practical implication is that K6V4 (Keys at 6-bit, Values at 4-bit) outperforms uniform 5-bit allocation.
+\paragraph{Asymmetric K/V allocation.}
+KVTuner~\citep{kvtuner2025} studies per-layer, per-head sensitivity, finding Keys $\sim$2$\times$ more sensitive than Values.
+Our work reveals the \emph{architectural} mechanism: the sensitivity gap is mediated by GQA ratio ($n_q / n_\text{kv}$), because K errors enter the softmax and are amplified across all sharing query heads.
+At GQA 7:1 (Qwen), 4-bit K is catastrophic; at GQA 4:1 (Llama, Mistral), 4-bit K is safe.
+This architecture-dependent failure mode has not been reported in prior work.
 
 \subsection{KV Cache Eviction}
 
 \paragraph{Attention-based eviction.}
-H\textsubscript{2}O~\citep{h2o2023} identifies ``heavy hitter'' tokens that accumulate high attention scores and retains only these, achieving $\sim$5$\times$ compression.
-ScissorHands~\citep{scissorhands2024} uses a similar importance-based criterion with a pivot token mechanism.
-Both methods achieve moderate compression but lack theoretical error bounds connecting eviction to quantization noise.
+H\textsubscript{2}O~\citep{h2o2023} retains ``heavy hitter'' tokens with highest cumulative attention scores, achieving $\sim$5$\times$ compression with moderate PPL impact.
+The original paper evaluates primarily on perplexity.
 
-\paragraph{Streaming and windowed approaches.}
-StreamingLLM~\citep{streamingllm2024} observes that the first few tokens (``attention sinks'') accumulate disproportionate attention regardless of content, and proposes retaining these plus a sliding window of recent tokens.
-Our eviction strategy builds on this observation but derives the eviction threshold from quantization error analysis rather than using a fixed window size.
+\paragraph{Position-based eviction.}
+StreamingLLM~\citep{streamingllm2024} retains attention sink tokens (first few tokens) plus a sliding window of recent tokens, discarding middle tokens regardless of importance.
 
-\paragraph{Token merging.}
-Token merging~\citep{tome2023} in vision transformers combines similar tokens to reduce sequence length.
-Attention Matching (MIT) applies a similar idea to KV caches, replacing $n$ KV entries with $m \ll n$ virtual entries optimized to preserve attention patterns.
-We discuss token merging as a future direction (Section~\ref{sec:phase3}) that could replace hard eviction with soft merging.
+\paragraph{Query-aware methods.}
+SnapKV~\citep{snapkv2024} uses the instruction/query portion of the prompt as an observation window to identify important tokens before generation.
+PyramidKV~\citep{pyramidkv2024} allocates layer-wise budgets based on attention pattern structure.
+Both are NIAH-safe \emph{when the query is present at prefill time}, but fail for pre-cached contexts or multi-turn scenarios.
 
-\subsection{Combined Approaches}
+\paragraph{Learned eviction.}
+LookaheadKV~\citep{lookaheadkv2026} trains learnable pseudo-query vectors to approximate future attention without seeing the actual query.
+ForesightKV~\citep{foresightkv2026} distills oracle future attention into a lightweight scorer via supervised learning and RL.
+Both require fine-tuning and are not post-training compatible.
 
-GEAR~\citep{gear2024} combines low-rank approximation with sparse outlier correction, achieving 4--8$\times$ compression.
-However, the low-rank assumption does not hold uniformly across layers, limiting compression ratio.
-Our approach differs by combining quantization (which has strong theoretical guarantees via rate-distortion theory) with eviction (which exploits the heavy-tailed attention distribution), achieving higher compression with principled error control.
+\paragraph{The causal limitation.}
+We demonstrate that \emph{no} retrospective scoring method (H\textsubscript{2}O, StreamingLLM, or any variant) can preserve retrieval quality under aggressive eviction, because eviction decisions at prefill time cannot anticipate future queries.
+This has been formalized independently: key vectors carry only 0.12 bits of mutual information with future attention patterns~\citep{limits-scoring-2026}, and attention predictability is fundamentally task-dependent~\citep{tappa2025}.
 
-\subsection{Evaluation Metrics}
+\subsection{Evaluation Methodology}
 
-Most prior work evaluates KV cache compression using perplexity (PPL), which measures per-token prediction quality.
-We argue that PPL systematically overestimates the quality impact of eviction-based compression, analogous to how PSNR overestimates quality degradation in video compression compared to perceptual metrics like VMAF~\citep{vmaf2016}.
-This observation connects to a broader discussion in the compression community about task-aware distortion functions~\citep{blau2019rethinking}.
+\paragraph{Perplexity as proxy.}
+The vast majority of KV cache compression papers use perplexity as the primary (often sole) evaluation metric.
+Notable exceptions include SnapKV (NIAH evaluation), PyramidKV (RULER benchmark), and KVzip (multi-query QA).
+
+\paragraph{The metric gap.}
+We show that perplexity and retrieval accuracy respond \emph{oppositely} to eviction: PPL can improve while retrieval collapses.
+This mirrors the classical PSNR--VMAF gap in video compression~\citep{vmaf2016}, where pixel-level distortion metrics fail to predict perceptual quality.
+The implication is that any paper reporting only PPL for eviction-based compression may be unknowingly presenting a misleading picture of quality.
 
 \subsection{Information-Theoretic Perspectives}
 
-Shannon's rate-distortion theory~\citep{shannon1959} provides fundamental limits on lossy compression.
-While widely applied in signal processing and video coding, its application to neural network intermediate representations (such as KV caches) is novel.
-We show that the KV cache, after Hadamard rotation, is well-modeled as a Gaussian source, enabling direct application of the Gaussian rate-distortion function to derive compression limits.
-The reverse water-filling algorithm~\citep{cover2006} for optimal bit allocation across sources with different variances provides the theoretical foundation for our four-tier token classification.
+Expected Attention~\citep{expected-attn-2025} models future queries as Gaussian-distributed and computes closed-form expected attention scores, achieving NIAH-safe eviction at up to 125K context without training.
+KVzip~\citep{kvzip2025} sidesteps the causal limitation entirely by scoring tokens based on reconstruction difficulty---tokens that are information-theoretically irreplaceable are retained regardless of query.
+These training-free approaches suggest that the causal limitation can be partially addressed through statistical modeling, though not to the compression ratios achievable by quantization.
