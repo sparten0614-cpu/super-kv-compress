@@ -32,7 +32,7 @@
 
 \begin{abstract}
 We conduct a systematic empirical study of KV cache compression across five LLMs (Llama-3.1-8B, Llama-3.3-70B, Mistral-7B, Qwen2.5-7B, Ministral-8B), revealing three findings that challenge prevailing assumptions.
-First, \textbf{quantization safety is architecture-dependent}: 4-bit KV quantization is lossless on GQA 4:1 models (Llama, Mistral) but catastrophically fails on GQA 7:1 models (Qwen: NIAH 0\% at every format $\leq$5-bit, with the bit cliff between 5 and 8 bits), with K-quantization---not V---as the root cause.
+First, \textbf{quantization safety is architecture-dependent}: 4-bit KV quantization is NIAH-safe on GQA 4:1 models (Llama, Mistral: 100\% NIAH, $\leq$3\% PPL increase) but catastrophically fails on GQA 7:1 models (Qwen: NIAH 0\% at every format $\leq$5-bit, with the bit cliff between 5 and 8 bits), with K-quantization---not V---as the root cause.
 Second, \textbf{eviction has a fundamental causal limitation}: four scoring strategies---position-based (StreamingLLM), attention-based (H\textsubscript{2}O), and K-statistics-based (Expected Attention, single- and multi-layer)---all fail at high eviction rates, with Expected Attention achieving 0\% NIAH at 85\% eviction. This limitation is information-theoretic, not algorithmic: eviction decisions at prefill time cannot anticipate future queries.
 Third, \textbf{perplexity is an unreliable proxy}: at 50\% eviction, PPL \emph{improves} ($-$0.09\%) while NIAH drops from 100\% to 60\%, creating a dangerous false positive for researchers using PPL alone.
 We show that K and V quantization errors are \textbf{additive} (predicted +3.13\% vs.\ measured +3.14\%), reducing calibration cost from $O(n^2)$ to $O(2n)$ configurations.
@@ -45,7 +45,7 @@ Our findings are immediately deployable in llama.cpp, the only inference framewo
 \input{sections/method}
 \input{sections/theory}
 \input{sections/metric_gap}
-\input{sections/experiments}  % Tables with TBD placeholders
+\input{sections/experiments}
 \input{sections/conclusion}
 
 \bibliographystyle{plainnat}

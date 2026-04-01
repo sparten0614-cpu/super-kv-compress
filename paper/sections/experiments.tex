@@ -24,7 +24,7 @@ We evaluate KV cache compression across three orthogonal dimensions---quantizati
     \item q4\_0 KV (4-bit uniform quantization, 4x compression)
     \item TQKV\_6 (TurboQuant uniform 6-bit K+V, 2.67x compression)
     \item StreamingLLM (position-based eviction: keep sink + recent tokens)
-    \item H2O (attention-score-based eviction: keep heavy hitters + recent)
+    \item H\textsubscript{2}O (attention-score-based eviction: keep heavy hitters + recent)
 \end{itemize}
 
 \paragraph{Metrics.}
@@ -197,7 +197,7 @@ TQKV\_6 & 2.67x & 100\% & 100\% & +0.08\% \\
 StreamingLLM 50\% & 2x & --- & 60\% & $-$0.09\% \\
 StreamingLLM 70\% & 3.3x & --- & 40\% & +1.04\% \\
 StreamingLLM 85\% & 6.7x & --- & 20\% & +7.50\% \\
-H2O 50\% & 2x & --- & 60\% & --- \\
+H\textsubscript{2}O 50\% & 2x & --- & 60\% & --- \\
 \midrule
 ExpAttn (single-layer) 50\% & 2x & --- & 40\% & --- \\
 ExpAttn (single-layer) 85\% & 6.7x & --- & \textbf{0\%} & --- \\
@@ -265,7 +265,7 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 \textbf{Compression} & \textbf{PPL $\Delta$} & \textbf{NIAH} & \textbf{LongBench} & \textbf{Verdict} \\
 \midrule
 2.67x (TQKV\_6) & +0.08\% & 100\% & 35\% (=FP16) & All metrics agree \\
-4x (q4\_0 Llama) & +3.06\% & 100\% & TBD & PPL degrades, NIAH holds \\
+4x (q4\_0 Llama) & +3.06\% & 100\% & ---$^\dagger$ & PPL degrades, NIAH holds \\
 2x (50\% evict) & $-$0.09\% & 60\% & ---$^*$ & \textbf{PPL improves, NIAH drops} \\
 3.3x (70\% evict) & +1.04\% & 40\% & ---$^*$ & PPL mild, NIAH severe \\
 6.7x (85\% evict) & +7.50\% & 20\% & ---$^*$ & Both metrics degrade \\
@@ -273,7 +273,7 @@ Llama TQKV\_6 & 35\% & 7/20 & $\sim$200 MiB & 2x \\
 4x (q4\_0 Qwen) & +116,855\% & 0\% & N/A & Architecture-dependent failure \\
 \bottomrule
 \end{tabular}
-\caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression. $^*$Eviction + LongBench not evaluated: given NIAH degradation at these rates, task-level degradation is expected and follows from the causal limitation.}
+\caption{The metric gap. PPL systematically overstates eviction quality at moderate compression (50\% eviction: PPL improves but NIAH drops 40\%). PPL understates architecture-specific failures (Qwen catastrophe). Neither metric alone is sufficient for evaluating KV cache compression. $^*$Eviction + LongBench not evaluated: given NIAH degradation at these rates, task-level degradation is expected and follows from the causal limitation. $^\dagger$LongBench v2 contexts (100K--500K+ tokens) exceed the model's 128K context window; evaluation requires context truncation or a shorter-context benchmark, deferred to future work.}
 \label{tab:metric-gap-summary}
 \end{table}
 
