@@ -1,0 +1,141 @@
+% Paper 2 Experiments Section
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate PCA-Quant along three axes: (1) coding gain over uniform quantization at matched bit budgets, (2) head-to-head comparison with Hadamard rotation (TurboQuant), and (3) compositional compression with attention merging.
+
+\subsection{Experimental Setup}
+
+\paragraph{Models.}
+We evaluate on three models spanning different GQA ratios and sizes:
+\begin{itemize}
+    \item \textbf{TinyLlama-1.1B} (MHA, $d_{\text{head}} = 64$): calibration baseline with full eigenspectrum data available.
+    \item \textbf{Llama-3.1-8B-Instruct} (GQA 4:1, $d_{\text{head}} = 128$): representative mid-scale model where uniform \texttt{q4\_0} is safe.
+    \item \textbf{Qwen2.5-3B-Instruct} (GQA 7:1, $d_{\text{head}} = 128$): model where uniform $\leq$5-bit K quantization catastrophically fails (NIAH $= 0\%$)~\citep{paper1}.
+\end{itemize}
+
+\paragraph{Calibration.}
+PCA bases are computed from 1000 tokens of WikiText-2 validation data using \texttt{register\_forward\_pre\_hook} in HuggingFace Transformers. Per-layer covariance eigendecomposition yields rotation matrices $P_\ell$ and eigenvalues $\{\lambda_j^{(\ell)}\}$. Tier assignments are computed via exhaustive search over cutpoints (Section~\ref{sec:tiered}).
+
+\paragraph{Quantization simulation.}
+We simulate PCA-adaptive quantization in the forward pass: K vectors are rotated ($\tilde{k} = P^\top k$), per-tier quantized and dequantized (using Lloyd-Max codebooks matching llama.cpp's \texttt{q4\_0}/\texttt{q5\_0}/\texttt{q8\_0} formats), then rotated back ($\hat{k} = P\hat{\tilde{k}}$). V vectors use uniform quantization (AM/GM $\approx 1.4$, Section~\ref{sec:pca-theory}).
+
+\paragraph{Metrics.}
+\begin{itemize}
+    \item \textbf{Perplexity (PPL):} WikiText-2 validation, 512-token context, 10 chunks.
+    \item \textbf{NIAH:} Needle-in-a-haystack retrieval at 4K/8K/16K/32K context lengths.
+    \item \textbf{QuALITY:} Reading comprehension accuracy (multiple-choice QA on long documents).
+\end{itemize}
+
+\subsection{Experiment 1: PCA-Quant vs.\ Uniform Quantization}
+
+\paragraph{Design.}
+Compare PCA-adaptive and uniform quantization at matched average bit rates:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llcc}
+\toprule
+\textbf{Config} & \textbf{K Quant} & \textbf{Avg bits} & \textbf{Compression} \\
+\midrule
+Baseline & FP16 & 16 & $1\times$ \\
+Uniform \texttt{q8\_0} & Uniform 8-bit & 8 & $2\times$ \\
+Uniform \texttt{q4\_0} & Uniform 4-bit & 4 & $4\times$ \\
+PCA-adaptive (4-bit avg) & Tiered: q8/q5/q4 & 4.8 & $3.3\times$ \\
+PCA-adaptive (3-bit avg) & Tiered: q5/q4/q2 & 3.2 & $5\times$ \\
+\bottomrule
+\end{tabular}
+\caption{K quantization configurations. V uses uniform \texttt{q4\_0} in all configs (AM/GM $\approx 1.4$, PCA unnecessary).}
+\label{tab:exp1-configs}
+\end{table}
+
+\paragraph{Hypothesis.}
+From Theorem~\ref{thm:coding-gain}, PCA-adaptive at $\bar{b}$ bits should achieve the distortion of uniform at $\bar{b} + \Delta b$ bits, where $\Delta b = \frac{1}{2}\log_2 G$. For normal layers ($G \approx 1.85$): $\Delta b \approx 0.44$ bits. For outlier layers ($G \approx 15$--$57$ at long contexts): $\Delta b \approx 2$--$3$ bits.
+
+\paragraph{Key comparison.}
+On Qwen2.5-3B, uniform \texttt{q4\_0} produces NIAH $= 0\%$. If PCA-adaptive at 4.8-bit average restores NIAH $> 0\%$, it demonstrates that the catastrophic failure is due to outlier-dimension under-quantization, not insufficient average precision---validating the theoretical framework.
+
+\subsection{Experiment 2: PCA vs.\ Hadamard (TurboQuant)}
+
+\paragraph{Design.}
+Head-to-head comparison of data-dependent (PCA) vs.\ data-independent (WHT) rotation at matched bit rates:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llc}
+\toprule
+\textbf{Config} & \textbf{Rotation} & \textbf{K Quant} \\
+\midrule
+No rotation & None & Uniform \texttt{q4\_0} \\
+WHT + uniform (TurboQuant) & Walsh-Hadamard & Uniform \texttt{q4\_0} \\
+PCA + uniform & PCA & Uniform \texttt{q4\_0} \\
+PCA + adaptive & PCA & Tiered q8/q5/q4 \\
+\bottomrule
+\end{tabular}
+\caption{Rotation comparison. WHT + uniform is the TurboQuant baseline. PCA + adaptive is our full method.}
+\label{tab:exp2-configs}
+\end{table}
+
+\paragraph{Hypothesis.}
+\begin{itemize}
+    \item WHT + uniform $\geq$ no rotation + uniform (WHT reduces outlier impact via equalization)
+    \item PCA + uniform $\approx$ no rotation + uniform (PCA without adaptive allocation has no benefit---the rotation itself doesn't help uniform quantization)
+    \item PCA + adaptive $>$ WHT + uniform (the theoretical improvement from Theorem~\ref{thm:pca-optimal})
+\end{itemize}
+
+The gap between PCA + adaptive and WHT + uniform directly measures the practical value of data-dependent rotation with adaptive allocation over data-independent equalization.
+
+\subsection{Experiment 3: Compositional Compression (AM + PCA-Quant)}
+
+\paragraph{Design.}
+Test whether AM and PCA-Quant errors combine additively (Section~\ref{sec:orthogonality}):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llcc}
+\toprule
+\textbf{Config} & \textbf{Token Compression} & \textbf{K Quant} & \textbf{Total $\rho$} \\
+\midrule
+Baseline & None & FP16 & $1\times$ \\
+PCA-Quant only & None & PCA-adaptive 4-bit & $3.3\times$ \\
+AM $2\times$ only & AM $2\times$ & FP16 & $2\times$ \\
+AM $2\times$ + uniform \texttt{q4\_0} & AM $2\times$ & Uniform 4-bit & $8\times$ \\
+AM $2\times$ + PCA-Quant & AM $2\times$ & PCA-adaptive 4-bit & $6.6\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Compositional compression configurations.}
+\label{tab:exp3-configs}
+\end{table}
+
+\paragraph{Additivity test.}
+Define $\Delta_{\text{AM}}$, $\Delta_{\text{PCA}}$ as individual PPL degradations. If errors are additive:
+\begin{equation}
+    \Delta_{\text{AM+PCA}} \approx \Delta_{\text{AM}} + \Delta_{\text{PCA}}
+\end{equation}
+This extends Paper~1's K/V additivity result (0.01\% prediction error) to the cross-method case. If validated, it enables independent calibration of each compression axis.
+
+\paragraph{Key question.}
+Does the AM $2\times$ regularization benefit (+2.2\% QA) persist when combined with PCA-Quant? If so, AM $2\times$ + PCA-Quant at $6.6\times$ total compression may achieve \emph{better-than-baseline} QA---a headline result.
+
+\subsection{Results}
+
+\emph{Results pending prototype implementation. Tables will be populated with PPL, NIAH, and QuALITY metrics for each configuration above.}
+
+% Placeholder tables for results
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Config} & \textbf{PPL} & \textbf{NIAH (\%)} & \textbf{QuALITY (\%)} \\
+\midrule
+Baseline (FP16) & TBD & TBD & TBD \\
+Uniform \texttt{q4\_0} & TBD & TBD & TBD \\
+PCA-adaptive (4-bit avg) & TBD & TBD & TBD \\
+WHT + uniform (TurboQuant) & TBD & TBD & TBD \\
+PCA + adaptive & TBD & TBD & TBD \\
+AM $2\times$ + PCA-Quant & TBD & TBD & TBD \\
+\bottomrule
+\end{tabular}
+\caption{Main results across all configurations. TBD: awaiting prototype results.}
+\label{tab:main-results}
+\end{table}
