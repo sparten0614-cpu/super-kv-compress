@@ -249,17 +249,47 @@ def calibrate_pca(model, tokenizer, device, cal_text, max_tokens, skip_layers,
     return configs
 
 
-def make_pca_quant_fn(configs, skip_layers, device):
-    """Create PCA-Quant function from calibrated configs."""
-    def pca_quant_fn(k_tensor, layer_idx):
-        if layer_idx in skip_layers or layer_idx not in configs:
-            return k_tensor
-        cfg = configs[layer_idx]
-        P, ta = cfg["P"], cfg["ta"]
-        k = k_tensor.float()
-        k_pca = torch.matmul(k, P)
-        k_pca_q = k_pca.clone()
+def make_pca_quant_fn(configs, skip_layers, device, per_dim=True):
+    """Create PCA-Quant function from calibrated configs.
 
+    Args:
+        per_dim: If True, quantize each PCA dim independently along the token
+                 axis (avoids block-scale mismatch across dims with different
+                 eigenvalues). If False, use the original cross-dim block-32.
+    """
+    def _quant_per_dim(k_pca, ta):
+        """Quantize each PCA dimension independently along token axis."""
+        k_q = k_pca.clone()
+        # Group dims by tier for efficiency
+        for tier_bits in set(ta):
+            dims = np.where(ta == tier_bits)[0]
+            if len(dims) == 0:
+                continue
+            # For each dim, quantize across (heads, tokens) independently
+            # Transpose: gather all values for these dims, but block along tokens
+            for d in dims:
+                # Shape: (batch..., seq_len) for one dim across all heads
+                col = k_pca[..., d].contiguous()  # (..., seq_len)
+                orig_shape = col.shape
+                flat = col.reshape(-1)
+                # Pad to multiple of 32
+                pad_len = (32 - len(flat) % 32) % 32
+                if pad_len:
+                    flat = torch.nn.functional.pad(flat, (0, pad_len))
+                flat = flat.reshape(-1, 32)
+                if tier_bits == 2:
+                    flat = quantize_q2_0(flat)
+                elif tier_bits == 4:
+                    flat = quantize_q4_0(flat)
+                elif tier_bits == 8:
+                    flat = quantize_q8_0(flat)
+                flat = flat.reshape(-1)[:len(flat.reshape(-1)) - pad_len if pad_len else len(flat.reshape(-1))]
+                k_q[..., d] = flat.reshape(orig_shape)
+        return k_q
+
+    def _quant_cross_dim(k_pca, ta):
+        """Original cross-dim block-32 quantization."""
+        k_q = k_pca.clone()
         for tier_bits in set(ta):
             dims = np.where(ta == tier_bits)[0]
             if len(dims) == 0:
@@ -276,7 +306,21 @@ def make_pca_quant_fn(configs, skip_layers, device):
                 sq = quantize_q8_0(fl)
             else:
                 sq = fl
-            k_pca_q[..., dims] = sq[..., :len(dims)].reshape(sub.shape)
+            k_q[..., dims] = sq[..., :len(dims)].reshape(sub.shape)
+        return k_q
+
+    def pca_quant_fn(k_tensor, layer_idx):
+        if layer_idx in skip_layers or layer_idx not in configs:
+            return k_tensor
+        cfg = configs[layer_idx]
+        P, ta = cfg["P"], cfg["ta"]
+        k = k_tensor.float()
+        k_pca = torch.matmul(k, P)
+
+        if per_dim:
+            k_pca_q = _quant_per_dim(k_pca, ta)
+        else:
+            k_pca_q = _quant_cross_dim(k_pca, ta)
 
         k_hat = torch.matmul(k_pca_q, P.T)
         return k_hat.to(k_tensor.dtype)
