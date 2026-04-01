@@ -35,8 +35,10 @@ We evaluate KV cache quantization at multiple bit-widths using llama.cpp's GGUF 
 
 \begin{itemize}
     \item \textbf{q8\_0}: 8-bit block quantization (2$\times$ compression)
+    \item \textbf{q5\_1}: 5-bit with offset (3.2$\times$ compression)
+    \item \textbf{q5\_0}: 5-bit block quantization (3.2$\times$ compression)
+    \item \textbf{q4\_1}: 4-bit with offset (4$\times$ compression)
     \item \textbf{q4\_0}: 4-bit block quantization (4$\times$ compression)
-    \item \textbf{q4\_1}: 4-bit with offset (4$\times$ compression, slightly higher quality)
     \item \textbf{TQKV\_6}: TurboQuant 6-bit with Hadamard rotation (2.67$\times$ compression)
 \end{itemize}
 

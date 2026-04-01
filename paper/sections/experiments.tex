@@ -104,7 +104,7 @@ q4\_1 (K+V) & 8392 & catastrophic & \\
 \end{table}
 
 \paragraph{Key Finding 2: K-quantization is the root cause.}
-K=q4\_0 with V=FP16 produces PPL 9694---confirming that \textbf{K-quantization alone} destroys Qwen at 4-bit. Two factors contribute:
+K=q4\_0 with V=FP16 produces PPL 9694---confirming that \textbf{K-quantization alone} destroys Qwen at $\leq$5-bit (q5\_1 and q5\_0 also catastrophically fail; \S\ref{sec:exp-quant}). Two factors contribute:
 
 \begin{enumerate}
     \item \textbf{GQA ratio as vulnerability factor.} With $n_\text{kv}=4$, each KV head is shared by 7 query heads. K-quantization error enters the softmax as $\text{softmax}((Q + \delta Q)(K + \delta K)^T / \sqrt{d})$, where $\delta K$ is amplified by all 7 query heads simultaneously. Fewer KV heads means less redundancy and higher per-head information density.

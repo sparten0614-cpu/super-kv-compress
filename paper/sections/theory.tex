@@ -36,7 +36,7 @@ Combining both terms yields the stated bound.
 \end{proof}
 
 \begin{remark}[K sensitivity is amplified by GQA]
-The $E_K$ term scales with $1/T^2$, capturing the softmax amplification of Key errors. In a GQA setting with ratio $r = n_q / n_\text{kv}$, each KV head serves $r$ query heads, so the total K-error contribution to the layer output is amplified by a factor of $r$. For $r = 7$ (Qwen), K-quantization error at 4-bit crosses the catastrophic threshold, while V$=$4-bit remains safe because V errors are linearly averaged (no softmax amplification). The sensitivity ranking K $>$ V is \emph{architecture-dependent}: it becomes more pronounced as GQA ratio increases.
+The $E_K$ term scales with $1/T^2$, capturing the softmax amplification of Key errors. In a GQA setting with ratio $r = n_q / n_\text{kv}$, each KV head serves $r$ query heads, so the total K-error contribution to the layer output is amplified by a factor of $r$. For $r = 7$ (Qwen), K-quantization error at $\leq$5-bit crosses the catastrophic threshold (empirically: q5\_1 through q4\_0 all produce NIAH 0\%), while V$=$4-bit remains safe because V errors are linearly averaged (no softmax amplification). The sensitivity ranking K $>$ V is \emph{architecture-dependent}: it becomes more pronounced as GQA ratio increases.
 \end{remark}
 
 \subsection{Eviction Error Bound}

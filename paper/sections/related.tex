@@ -15,7 +15,7 @@ Community reproductions have found that the paper's recommended QJL rotation for
 \paragraph{Asymmetric K/V allocation.}
 KVTuner~\citep{kvtuner2025} studies per-layer, per-head sensitivity, finding Keys $\sim$2$\times$ more sensitive than Values.
 Our work reveals the \emph{architectural} mechanism: the sensitivity gap is mediated by GQA ratio ($n_q / n_\text{kv}$), because K errors enter the softmax and are amplified across all sharing query heads.
-At GQA 7:1 (Qwen), 4-bit K is catastrophic; at GQA 4:1 (Llama, Mistral), 4-bit K is safe.
+At GQA 7:1 (Qwen), $\leq$5-bit K is catastrophic (bit cliff between 5 and 8 bits); at GQA 4:1 (Llama, Mistral), 4-bit K is safe.
 This architecture-dependent failure mode has not been reported in prior work.
 
 \subsection{KV Cache Eviction}
