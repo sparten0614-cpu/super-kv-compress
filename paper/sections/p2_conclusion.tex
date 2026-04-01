@@ -9,7 +9,7 @@ We presented PCA-Quant, a principled framework for adaptive KV cache quantizatio
 
     \item \textbf{Coding gain concentrates on outlier layers.} Empirical eigenspectrum analysis reveals that PCA-Quant's benefit is not uniform: outlier layers (2--3 per model) achieve $+2$--$3$ bit effective precision gain, while normal layers gain $+0.4$--$0.5$ bits. This concentration is advantageous---PCA-Quant precisely targets the layers responsible for catastrophic quantization failure in GQA-heavy architectures.
 
-    \item \textbf{Theory matches experiment.} On TinyLlama-1.1B at 4-bit average, PCA-Quant reduces PPL degradation by 51\% compared to uniform quantization at the same memory footprint. The measured error reduction (51.6\% cosine, 51.2\% PPL) matches the theoretical prediction from the AM/GM coding gain ($G = 1.97$, $\Delta b = +0.49$ bits).
+    \item \textbf{Theory matches experiment.} On TinyLlama-1.1B at 4-bit average, PCA-Quant reduces mean PPL degradation by 63\% across 5 diverse texts compared to uniform quantization at the same memory footprint (4/5 texts show improvement). Reconstruction error reduction is consistent at 51.6\% (cosine similarity), matching the theoretical prediction from the AM/GM coding gain ($G = 1.97$, $\Delta b = +0.49$ bits).
 
     \item \textbf{V cache is near-isotropic.} V cache AM/GM $\approx 1.4$ across all models and layers, confirming that adaptive allocation is needed only for K. This halves implementation complexity.
 
