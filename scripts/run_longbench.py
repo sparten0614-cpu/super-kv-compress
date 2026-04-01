@@ -116,7 +116,7 @@ Answer:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300
+            cmd, capture_output=True, text=True, timeout=1800
         )
         os.unlink(prompt_file)
 
@@ -130,7 +130,7 @@ Answer:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
     except subprocess.TimeoutExpired:
         os.unlink(prompt_file)
-        print("  Timeout (300s)")
+        print("  Timeout (1800s)")
         return ""
     except Exception as e:
         if os.path.exists(prompt_file):
