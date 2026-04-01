@@ -52,6 +52,18 @@ def quantize_q8_0(x):
     return (x_q * scale).reshape(orig_shape).to(orig_dtype)
 
 
+def quantize_q2_0(x):
+    """q2_0: 2-bit symmetric, block size 32."""
+    orig_dtype = x.dtype
+    x = x.float()
+    orig_shape = x.shape
+    x = x.reshape(-1, 32)
+    amax = x.abs().max(dim=1, keepdim=True).values.clamp(min=1e-10)
+    scale = amax / 1.0  # 2-bit signed: [-2, 1], use 1 for symmetric
+    x_q = (x / scale).round().clamp(-2, 1)
+    return (x_q * scale).reshape(orig_shape).to(orig_dtype)
+
+
 # ============================================================
 # NIAH Test
 # ============================================================
@@ -174,7 +186,7 @@ def run_niah_test(model, tokenizer, quant_fn, label, device, num_positions=5, ma
 # ============================================================
 
 def calibrate_pca(model, tokenizer, device, cal_text, max_tokens, skip_layers,
-                  avg_bits=4.0, tiers=(4, 8, 16)):
+                  avg_bits=4.0, tiers=(2, 4, 8)):
     """Calibrate PCA basis from calibration text."""
     tiers = sorted(tiers)
     cal_tokens = tokenizer.encode(cal_text)[:max_tokens]
@@ -256,7 +268,9 @@ def make_pca_quant_fn(configs, skip_layers, device):
             fl = sub.reshape(-1, len(dims))
             if len(dims) % 32 != 0:
                 fl = torch.nn.functional.pad(fl, (0, 32 - len(dims) % 32))
-            if tier_bits == 4:
+            if tier_bits == 2:
+                sq = quantize_q2_0(fl)
+            elif tier_bits == 4:
                 sq = quantize_q4_0(fl)
             elif tier_bits == 8:
                 sq = quantize_q8_0(fl)
