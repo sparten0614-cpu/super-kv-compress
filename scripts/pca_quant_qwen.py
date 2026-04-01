@@ -186,7 +186,7 @@ def run_niah_test(model, tokenizer, quant_fn, label, device, num_positions=5, ma
 # ============================================================
 
 def calibrate_pca(model, tokenizer, device, cal_text, max_tokens, skip_layers,
-                  avg_bits=4.0, tiers=(2, 4, 8)):
+                  avg_bits=4.0, tiers=(4, 8, 16)):
     """Calibrate PCA basis from calibration text."""
     tiers = sorted(tiers)
     cal_tokens = tokenizer.encode(cal_text)[:max_tokens]
