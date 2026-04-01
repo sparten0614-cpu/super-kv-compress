@@ -393,6 +393,8 @@ def main():
     parser.add_argument("--avg-bits", type=float, default=4.0)
     parser.add_argument("--niah", action="store_true", help="Run NIAH test")
     parser.add_argument("--ppl", action="store_true", help="Run PPL test")
+    parser.add_argument("--rotation-only", action="store_true",
+                        help="Test rotation without quantization (isolate rotation effect)")
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--output-dir", type=str, default="results/pca_quant_qwen")
     args = parser.parse_args()
@@ -468,6 +470,19 @@ def main():
     pca_fn = make_pca_quant_fn(configs, skip_layers, device)
     u4_fn = make_uniform_q4_fn(skip_layers)
 
+    # Rotation-only function: rotate to PCA and back without quantization
+    def rotation_only_fn(k_tensor, layer_idx):
+        if layer_idx in skip_layers or layer_idx not in configs:
+            return k_tensor
+        P = configs[layer_idx]["P"]
+        k = k_tensor.float()
+        k_back = torch.matmul(torch.matmul(k, P), P.T)
+        return k_back.to(k_tensor.dtype)
+
+    if args.rotation_only:
+        pca_fn = rotation_only_fn
+        print("\n*** ROTATION-ONLY MODE: no quantization, testing rotation effect ***")
+
     results = {
         "model": args.model,
         "num_layers": num_layers,
@@ -475,6 +490,7 @@ def main():
         "head_dim": head_dim,
         "skip_layers": skip_layers,
         "avg_bits": args.avg_bits,
+        "rotation_only": args.rotation_only,
     }
 
     # PPL Test
