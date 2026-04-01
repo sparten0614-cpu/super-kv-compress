@@ -1,0 +1,139 @@
+{
+  "model": "TinyLlama-1.1B",
+  "source": "W_K_SVD_proxy",
+  "per_layer": [
+    {
+      "layer": 0,
+      "wk_svd_amgm": 148.23171997070312,
+      "wk_svd_cond": 61370792.0,
+      "coding_gain_bits": 3.6058552265167236
+    },
+    {
+      "layer": 1,
+      "wk_svd_amgm": 11.328465461730957,
+      "wk_svd_cond": 1196222.25,
+      "coding_gain_bits": 1.7509403228759766
+    },
+    {
+      "layer": 2,
+      "wk_svd_amgm": 3.216853618621826,
+      "wk_svd_cond": 4265.8740234375,
+      "coding_gain_bits": 0.8428251147270203
+    },
+    {
+      "layer": 3,
+      "wk_svd_amgm": 1.8969700336456299,
+      "wk_svd_cond": 2254.0546875,
+      "coding_gain_bits": 0.4618484377861023
+    },
+    {
+      "layer": 4,
+      "wk_svd_amgm": 1.6288810968399048,
+      "wk_svd_cond": 697.3964233398438,
+      "coding_gain_bits": 0.35194066166877747
+    },
+    {
+      "layer": 5,
+      "wk_svd_amgm": 1.8144534826278687,
+      "wk_svd_cond": 3017.86279296875,
+      "coding_gain_bits": 0.42976754903793335
+    },
+    {
+      "layer": 6,
+      "wk_svd_amgm": 1.9513927698135376,
+      "wk_svd_cond": 4037.35693359375,
+      "coding_gain_bits": 0.4822520911693573
+    },
+    {
+      "layer": 7,
+      "wk_svd_amgm": 2.1100990772247314,
+      "wk_svd_cond": 790.6611938476562,
+      "coding_gain_bits": 0.5386553406715393
+    },
+    {
+      "layer": 8,
+      "wk_svd_amgm": 1.7993905544281006,
+      "wk_svd_cond": 1216.5133056640625,
+      "coding_gain_bits": 0.42375418543815613
+    },
+    {
+      "layer": 9,
+      "wk_svd_amgm": 1.7716490030288696,
+      "wk_svd_cond": 665.3787841796875,
+      "coding_gain_bits": 0.41254639625549316
+    },
+    {
+      "layer": 10,
+      "wk_svd_amgm": 1.7418100833892822,
+      "wk_svd_cond": 557.9730224609375,
+      "coding_gain_bits": 0.4002936780452728
+    },
+    {
+      "layer": 11,
+      "wk_svd_amgm": 1.8850464820861816,
+      "wk_svd_cond": 1420.6134033203125,
+      "coding_gain_bits": 0.4573000371456146
+    },
+    {
+      "layer": 12,
+      "wk_svd_amgm": 1.8508059978485107,
+      "wk_svd_cond": 386.2153625488281,
+      "coding_gain_bits": 0.4440768361091614
+    },
+    {
+      "layer": 13,
+      "wk_svd_amgm": 1.8690265417099,
+      "wk_svd_cond": 573.3909912109375,
+      "coding_gain_bits": 0.4511435329914093
+    },
+    {
+      "layer": 14,
+      "wk_svd_amgm": 1.9923131465911865,
+      "wk_svd_cond": 1208.126953125,
+      "coding_gain_bits": 0.4972222149372101
+    },
+    {
+      "layer": 15,
+      "wk_svd_amgm": 1.8134633302688599,
+      "wk_svd_cond": 387.2673645019531,
+      "coding_gain_bits": 0.4293738007545471
+    },
+    {
+      "layer": 16,
+      "wk_svd_amgm": 1.6813275814056396,
+      "wk_svd_cond": 484.3564147949219,
+      "coding_gain_bits": 0.3748004138469696
+    },
+    {
+      "layer": 17,
+      "wk_svd_amgm": 1.6959189176559448,
+      "wk_svd_cond": 418.54632568359375,
+      "coding_gain_bits": 0.38103359937667847
+    },
+    {
+      "layer": 18,
+      "wk_svd_amgm": 1.8723838329315186,
+      "wk_svd_cond": 262.32952880859375,
+      "coding_gain_bits": 0.4524381160736084
+    },
+    {
+      "layer": 19,
+      "wk_svd_amgm": 1.7349900007247925,
+      "wk_svd_cond": 407.17584228515625,
+      "coding_gain_bits": 0.39746367931365967
+    },
+    {
+      "layer": 20,
+      "wk_svd_amgm": 1.6686420440673828,
+      "wk_svd_cond": 801.1461791992188,
+      "coding_gain_bits": 0.369337260723114
+    },
+    {
+      "layer": 21,
+      "wk_svd_amgm": 1.6709271669387817,
+      "wk_svd_cond": 919.0897216796875,
+      "coding_gain_bits": 0.37032443284988403
+    }
+  ],
+  "avg_amgm": 8.964842281558298
+}
