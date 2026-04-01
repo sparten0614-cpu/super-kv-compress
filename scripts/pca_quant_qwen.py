@@ -30,24 +30,26 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 def quantize_q4_0(x):
     """q4_0: 4-bit symmetric, block size 32."""
+    orig_dtype = x.dtype
     x = x.float()
     orig_shape = x.shape
     x = x.reshape(-1, 32)
     amax = x.abs().max(dim=1, keepdim=True).values.clamp(min=1e-10)
     scale = amax / 7.0
     x_q = (x / scale).round().clamp(-8, 7)
-    return (x_q * scale).reshape(orig_shape)
+    return (x_q * scale).reshape(orig_shape).to(orig_dtype)
 
 
 def quantize_q8_0(x):
     """q8_0: 8-bit symmetric, block size 32."""
+    orig_dtype = x.dtype
     x = x.float()
     orig_shape = x.shape
     x = x.reshape(-1, 32)
     amax = x.abs().max(dim=1, keepdim=True).values.clamp(min=1e-10)
     scale = amax / 127.0
     x_q = (x / scale).round().clamp(-128, 127)
-    return (x_q * scale).reshape(orig_shape)
+    return (x_q * scale).reshape(orig_shape).to(orig_dtype)
 
 
 # ============================================================
