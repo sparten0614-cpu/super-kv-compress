@@ -1,0 +1,110 @@
+% Paper 2 System Design Section
+\section{System Design}
+\label{sec:system}
+
+We translate the theoretical framework of Section~\ref{sec:pca-theory} into a practical system with three design decisions: a two-tier layer classification, K-only adaptive allocation, and offline calibration with static PCA bases.
+
+\subsection{Two-Tier Layer Architecture}
+\label{sec:two-tier}
+
+Not all layers benefit equally from PCA-adaptive quantization. Our eigenspectrum analysis (Table~\ref{tab:amgm}) reveals a bimodal distribution:
+
+\begin{itemize}
+    \item \textbf{Normal layers} (typically $>$90\% of all layers): AM/GM $\approx 1.5$--$2.5$, coding gain $+0.3$--$0.7$ bits. PCA basis is stable across sequence lengths (CV $<$ 10\%). These layers benefit from PCA-adaptive allocation and support static calibration.
+    \item \textbf{Outlier layers} (typically 2--3 per model, often Layer 0): AM/GM $\gg 10$, but high inter-head variance (CV $= 33$--$49\%$) and sequence-length instability (AM/GM drops $4\times$ from 256 to 2048 tokens). These layers are precisely where uniform quantization fails catastrophically, but their instability makes PCA-adaptive allocation unreliable.
+\end{itemize}
+
+\paragraph{Strategy.}
+Normal layers use PCA-adaptive quantization (the full pipeline). Outlier layers use a conservative high-bit fallback (\texttt{q8\_0} or FP16) without PCA rotation. This two-tier approach captures most of the coding gain while avoiding the instability of outlier layers.
+
+\paragraph{Layer classification.}
+A layer $\ell$ is classified as \emph{outlier} if any of the following hold during calibration:
+\begin{enumerate}
+    \item K cache condition number $\kappa_K^{(\ell)} > 10^5$
+    \item Inter-head AM/GM coefficient of variation $\text{CV}_h > 25\%$
+    \item AM/GM sensitivity to calibration sequence length exceeds $2\times$ (measured at 256 vs.\ 2048 tokens)
+\end{enumerate}
+In practice, these criteria identify the same 2--3 layers per model. The classification is performed once during offline calibration.
+
+\subsection{Offline Calibration Pipeline}
+\label{sec:calibration}
+
+Calibration is a one-time per-model procedure that produces PCA rotation matrices and tier assignments for all normal layers.
+
+\paragraph{Step 1: KV cache collection.}
+Run $N = 1000$ tokens of calibration text (WikiText-2 validation) through the model using HuggingFace Transformers with \texttt{register\_forward\_pre\_hook} on each attention layer. Collect K vectors $\{k_t^{(\ell,h)}\}$ per layer $\ell$ and head $h$.
+
+\paragraph{Step 2: PCA decomposition.}
+For each normal layer $\ell$ (shared across heads within the layer, justified by inter-head CV $<$ 10\%):
+\begin{enumerate}
+    \item Pool K vectors across all heads: $\{k_t^{(\ell,h)}\}_{t,h}$
+    \item Compute empirical covariance: $\Sigma_K^{(\ell)} = \frac{1}{|\mathcal{D}|} \sum_{t,h} k_t^{(\ell,h)} {k_t^{(\ell,h)}}^\top$
+    \item Eigendecompose: $\Sigma_K^{(\ell)} = P^{(\ell)} \Lambda^{(\ell)} {P^{(\ell)}}^\top$
+\end{enumerate}
+
+\paragraph{Step 3: Tier assignment.}
+Given the eigenvalues $\{\lambda_j^{(\ell)}\}$ and available quantization types $\{(\beta_m, c_m)\}_{m=1}^M$, find optimal tier cutpoints by exhaustive search (Section~\ref{sec:tiered}). For $M = 3$ tiers and $d = 128$: $O(d^2) = 16{,}384$ evaluations, completing in milliseconds.
+
+\paragraph{Output.}
+Per-model calibration artifact:
+\begin{itemize}
+    \item Layer classification: list of outlier layer indices
+    \item Per-layer PCA matrix: $P^{(\ell)} \in \mathbb{R}^{d \times d}$ (FP16, 32 KB per layer)
+    \item Per-layer tier assignment: mapping from dimension index to quantization type
+    \item Total storage: $\sim$1 MB for Llama-3.1-8B (Section~\ref{sec:complexity})
+\end{itemize}
+
+\subsection{Runtime Encode/Decode}
+\label{sec:runtime}
+
+During inference, the PCA-Quant pipeline modifies only the KV cache write and read paths. The attention computation itself is unchanged.
+
+\paragraph{Encode (KV cache write, per token).}
+For each normal layer $\ell$ and incoming key vector $k$:
+\begin{enumerate}
+    \item \textbf{Rotate:} $\tilde{k} = {P^{(\ell)}}^\top k$ \hfill [$O(d^2)$ FLOPs]
+    \item \textbf{Tiered quantize:} For each dimension $j$, quantize $\tilde{k}_j$ using the assigned tier's quantizer (e.g., \texttt{q8\_0} for Tier 1, \texttt{q4\_0} for Tier 3) \hfill [$O(d)$ FLOPs]
+    \item \textbf{Store:} Pack quantized $\hat{\tilde{k}}$ into KV cache
+\end{enumerate}
+For outlier layers: skip rotation, apply uniform \texttt{q8\_0} or FP16 directly.
+
+\paragraph{Decode (KV cache read, per token per position).}
+For each normal layer $\ell$ and cached key at position $t$:
+\begin{enumerate}
+    \item \textbf{Tiered dequantize:} Reconstruct $\hat{\tilde{k}}_t$ from stored data \hfill [$O(d)$ FLOPs]
+    \item \textbf{Rotate back:} $\hat{k}_t = P^{(\ell)} \hat{\tilde{k}}_t$ \hfill [$O(d^2)$ FLOPs]
+    \item \textbf{Attend:} Compute $q^\top \hat{k}_t / \sqrt{d}$ as normal
+\end{enumerate}
+
+\paragraph{Optimization: fused rotation.}
+The decode rotation can be absorbed into the attention computation. Instead of rotating each key back and computing $q^\top \hat{k}$, we rotate the query once: $\tilde{q} = {P^{(\ell)}}^\top q$, then compute $\tilde{q}^\top \hat{\tilde{k}}$ directly in the PCA basis. This reduces the per-position decode cost from $O(d^2)$ to $O(d)$ (only the one-time query rotation is $O(d^2)$), making the overhead negligible for contexts $n > 1$.
+
+\subsection{K-Only Strategy}
+\label{sec:k-only}
+
+PCA-adaptive allocation is applied only to K cache. V cache uses standard uniform quantization (\texttt{q4\_0}). The rationale:
+
+\begin{enumerate}
+    \item \textbf{V is near-isotropic.} V cache AM/GM $\approx 1.43$ across all layers (Table~\ref{tab:amgm}), yielding a coding gain of only $+0.26$ bits---below the threshold where the PCA overhead (rotation + calibration storage) is justified.
+    \item \textbf{K is the bottleneck.} K quantization errors enter the softmax nonlinearity, where they are amplified by the effective temperature and multiplied across GQA sharing heads~\citep{paper1}. V errors propagate linearly. This makes K the primary target for precision improvement.
+    \item \textbf{Implementation simplicity.} K-only PCA halves the number of rotation matrices to store and the number of runtime matrix-vector products. For Llama-3.1-8B: 1 MB calibration data instead of 2 MB, and $\sim$1.5\% decode overhead instead of $\sim$3\%.
+\end{enumerate}
+
+\subsection{Integration with Token-Level Compression}
+\label{sec:integration}
+
+PCA-Quant composes naturally with token-level compression (eviction, attention merging) because the two operate on orthogonal axes:
+
+\begin{itemize}
+    \item PCA-Quant modifies \emph{how each vector is stored} (dimension-wise precision)
+    \item Token compression modifies \emph{which vectors are stored} (position-wise selection)
+\end{itemize}
+
+In a combined pipeline, token compression is applied first (reducing the number of entries), then PCA-Quant is applied to the retained entries. The ordering matters: compressing tokens before quantization means fewer vectors to rotate, reducing the total rotation overhead proportionally.
+
+For AM $2\times$ + PCA-Quant at 4-bit average:
+\begin{itemize}
+    \item Token compression: $2\times$ (AM reduces KV cache entries by half)
+    \item Bit compression: $\sim$$3.3\times$ (4.8-bit K average + 4-bit V vs.\ 16-bit FP16)
+    \item Total: $\sim$$6.6\times$ compression with rotation overhead halved by AM
+\end{itemize}
