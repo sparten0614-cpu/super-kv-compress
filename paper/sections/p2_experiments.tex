@@ -53,11 +53,11 @@ PCA-adaptive (3-bit avg) & Tiered: q5/q4/q2 & 3.2 & $5\times$ \\
 From Theorem~\ref{thm:coding-gain}, PCA-adaptive at $\bar{b}$ bits should achieve the distortion of uniform at $\bar{b} + \Delta b$ bits, where $\Delta b = \frac{1}{2}\log_2 G$. For normal layers ($G \approx 1.85$): $\Delta b \approx 0.44$ bits. For outlier layers ($G \approx 15$--$57$ at long contexts): $\Delta b \approx 2$--$3$ bits.
 
 \paragraph{Key comparison.}
-On Qwen2.5-3B, uniform \texttt{q4\_0} produces NIAH $= 0\%$. If PCA-adaptive at 4.8-bit average restores NIAH $> 0\%$, it demonstrates that the catastrophic failure is due to outlier-dimension under-quantization, not insufficient average precision---validating the theoretical framework.
+On GQA-heavy models, uniform \texttt{q4\_0} causes severe PPL degradation (up to +39\% on Qwen2.5-3B). PCA-Quant at the same 4-bit budget should reduce this degradation proportionally to the coding gain $G$, with larger benefits on models with higher eigenspectral non-uniformity.
 
-\subsection{Experiment 2: PCA vs.\ Hadamard (TurboQuant)}
+\subsection{Planned Experiment 2: PCA vs.\ Hadamard (TurboQuant)}
 
-\paragraph{Design.}
+\paragraph{Design (future work).}
 Head-to-head comparison of data-dependent (PCA) vs.\ data-independent (WHT) rotation at matched bit rates:
 
 \begin{table}[h]
@@ -85,9 +85,9 @@ PCA + adaptive & PCA & Tiered q8/q5/q4 \\
 
 The gap between PCA + adaptive and WHT + uniform directly measures the practical value of data-dependent rotation with adaptive allocation over data-independent equalization.
 
-\subsection{Experiment 3: Compositional Compression (AM + PCA-Quant)}
+\subsection{Planned Experiment 3: Compositional Compression (AM + PCA-Quant)}
 
-\paragraph{Design.}
+\paragraph{Design (future work).}
 Test whether AM and PCA-Quant errors combine additively (Section~\ref{sec:orthogonality}):
 
 \begin{table}[h]
