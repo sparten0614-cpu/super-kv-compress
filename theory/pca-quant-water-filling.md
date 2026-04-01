@@ -375,7 +375,7 @@ For Qwen/GQA: PCA-Quant resolves the outlier-layer precision bottleneck (Layer 0
 
 | Layer type | W_K SVD AM/GM | Actual KV AM/GM | Error |
 |------------|---------------|-----------------|-------|
-| Normal (3-21) | 1.80 | 1.85 | -3% |
+| Normal (3-21) | 1.81 | 1.81 | ≈0% |
 | Outlier (L0) | 148.2 | 56.8 | +161% (overestimate) |
 | Outlier (L1) | 11.33 | 3.78 | +200% (overestimate) |
 
