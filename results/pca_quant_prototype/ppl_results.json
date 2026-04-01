@@ -1,0 +1,15 @@
+{
+  "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "max_tokens": 128,
+  "skip_layers": [
+    0,
+    1,
+    2
+  ],
+  "ppl_fp16": 9.554357528686523,
+  "ppl_uniform_q4": 9.713085174560547,
+  "ppl_pca_quant": 9.63176155090332,
+  "delta_ppl_q4_pct": 1.6613115575531991,
+  "delta_ppl_pca_pct": 0.810143664651389,
+  "pca_captures_pct_of_q4_degradation": 48.76530599983177
+}
