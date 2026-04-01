@@ -1,0 +1,46 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{natbib}
+\usepackage{multirow}
+
+\graphicspath{{figures/}}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+% Placeholder command for TBD values
+\newcommand{\placeholder}{---}
+
+\title{PCA-Quant: Optimal Bit Allocation for KV Cache Quantization\\via Eigenspectrum-Adaptive Rotation}
+
+\author{
+  Anonymous Authors
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{sections/p2_abstract}
+
+\input{sections/p2_introduction}
+\input{sections/p2_related}
+\input{sections/pca_theory}
+\input{sections/p2_system_design}
+\input{sections/compression_regularization}
+\input{sections/p2_experiments}
+\input{sections/p2_conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

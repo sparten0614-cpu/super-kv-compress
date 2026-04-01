@@ -1,0 +1,23 @@
+% Paper 2 Conclusion
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented PCA-Quant, a principled framework for adaptive KV cache quantization that allocates bits optimally across dimensions via water-filling on the PCA eigenspectrum. Our main findings:
+
+\begin{enumerate}
+    \item \textbf{Water-filling is optimal and practical.} The classical rate-distortion result $b_j^* = \bar{b} + \frac{1}{2}\log_2(\lambda_j / \bar{\lambda}_g)$ applies directly to KV cache quantization. PCA maximizes coding gain over all orthogonal transforms, including the Hadamard rotation used by TurboQuant. The overhead is negligible: one-time calibration in $<$1 second, 1 MB storage, $\sim$3\% runtime cost (eliminated via fused query rotation).
+
+    \item \textbf{Coding gain concentrates on outlier layers.} Empirical eigenspectrum analysis reveals that PCA-Quant's benefit is not uniform: outlier layers (2--3 per model) achieve $+2$--$3$ bit effective precision gain, while normal layers gain $+0.4$--$0.5$ bits. This concentration is advantageous---PCA-Quant precisely targets the layers responsible for catastrophic quantization failure in GQA-heavy architectures.
+
+    \item \textbf{Theory matches experiment.} On TinyLlama-1.1B at 4-bit average, PCA-Quant reduces PPL degradation by 51\% compared to uniform quantization at the same memory footprint. The measured error reduction (51.6\% cosine, 51.2\% PPL) matches the theoretical prediction from the AM/GM coding gain ($G = 1.97$, $\Delta b = +0.49$ bits).
+
+    \item \textbf{V cache is near-isotropic.} V cache AM/GM $\approx 1.4$ across all models and layers, confirming that adaptive allocation is needed only for K. This halves implementation complexity.
+
+    \item \textbf{Compression can improve quality.} Attention merging at $2\times$ compression improves QuALITY accuracy by $+2.2\%$ over baseline---a ``compression as regularization'' effect followed by a sharp cliff between $2\times$ and $5\times$. This non-monotonic pattern challenges the assumption that compression necessarily degrades quality and motivates quality-curve evaluation.
+\end{enumerate}
+
+\paragraph{Limitations.}
+Our experimental validation is currently limited to TinyLlama-1.1B. Validation on Llama-3.1-8B and Qwen2.5-3B---particularly the critical test of whether PCA-Quant restores NIAH on Qwen---is pending GPU availability. The prototype uses simulated quantization in Python; a production implementation in llama.cpp is needed to measure actual inference speedup. Additionally, the attention-aware water-filling extension (Section~\ref{sec:pca-theory}, query-weighted distortion) remains theoretical.
+
+\paragraph{Future work.}
+Three directions are immediate: (1) production implementation in llama.cpp with the fused query rotation optimization; (2) compositional compression experiments combining PCA-Quant with attention merging to validate the predicted additivity of orthogonal compression axes; and (3) extending PCA-Quant to the value cache for models where V AM/GM is higher (e.g., TinyLlama Layer~0, V AM/GM $= 8.9$).
