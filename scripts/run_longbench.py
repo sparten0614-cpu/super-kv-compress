@@ -100,6 +100,7 @@ Answer:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
         "-n", "256",           # max generation tokens
         "--temp", "0",         # greedy decoding
         "-c", "0",             # auto context size
+        "-ngl", "99",          # offload all layers to GPU
         "--no-display-prompt",
     ]
 
