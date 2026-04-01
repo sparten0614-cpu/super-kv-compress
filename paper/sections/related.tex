@@ -54,6 +54,6 @@ The implication is that any paper reporting only PPL for eviction-based compress
 
 \subsection{Information-Theoretic Perspectives}
 
-Expected Attention~\citep{expected-attn-2025} models future queries as Gaussian-distributed and computes closed-form expected attention scores, achieving NIAH-safe eviction at up to 125K context without training.
+Expected Attention~\citep{expected-attn-2025} models future queries as Gaussian-distributed and computes closed-form expected attention scores, claiming NIAH-safe eviction at up to 125K context without training. However, our experiments (\S\ref{sec:exp-niah}) show that both single-layer and multi-layer variants achieve 0\% NIAH at 85\% eviction---worse than StreamingLLM's 20\%.
 KVzip~\citep{kvzip2025} sidesteps the causal limitation entirely by scoring tokens based on reconstruction difficulty---tokens that are information-theoretically irreplaceable are retained regardless of query.
 These training-free approaches suggest that the causal limitation can be partially addressed through statistical modeling, though not to the compression ratios achievable by quantization.
