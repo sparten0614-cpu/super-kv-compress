@@ -1,0 +1,11 @@
+{
+  "tokens": 256,
+  "calibration_tokens": 256,
+  "ppl_fp16": 11.5792,
+  "ppl_q4": 11.6018,
+  "ppl_pca": 11.6571,
+  "delta_ppl_q4_pct": 0.19,
+  "delta_ppl_pca_pct": 0.67,
+  "pca_frac_of_q4_degradation": 345.4,
+  "note": "PCA-Quant worse than uniform q4 at 256 tokens because q4 degradation is negligible (0.19%). PCA rotation overhead dominates."
+}
