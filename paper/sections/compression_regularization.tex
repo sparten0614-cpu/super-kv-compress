@@ -1,0 +1,63 @@
+\subsection{Compression as Regularization}
+\label{sec:compression-reg}
+
+A surprising finding emerges from the attention merging (AM) degradation curve: \emph{mild compression improves downstream task accuracy}. At $2\times$ compression, QuALITY reading comprehension accuracy increases from 70.0\% to 72.2\%---a 2.2 percentage point improvement over the uncompressed baseline (Table~\ref{tab:am-curve}). This contradicts the implicit assumption in KV compression literature that any compression necessarily degrades quality.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rcccc}
+\toprule
+\textbf{Compression} & \textbf{QuALITY (\%)} & \textbf{PPL} & $\boldsymbol{\Delta}$\textbf{QA} & \textbf{Regime} \\
+\midrule
+$1\times$ (baseline) & 70.0 & 1.14 & --- & --- \\
+$2\times$ & \textbf{72.2} & 1.26 & \textbf{+2.2} & denoising \\
+$5\times$ & 58.9 & 1.66 & $-11.1$ & post-cliff \\
+$10\times$ & 57.8 & 2.09 & $-12.2$ & plateau \\
+\bottomrule
+\end{tabular}
+\caption{Attention merging degradation curve on Llama-3.1-8B (QuALITY benchmark, 4K context). At $2\times$ compression, task accuracy \emph{exceeds} the uncompressed baseline. A sharp cliff between $2\times$ and $5\times$ ($-13.3$ points) is followed by a plateau where further compression causes minimal additional degradation.}
+\label{tab:am-curve}
+\end{table}
+
+\paragraph{Mechanism: implicit denoising.}
+Attention merging constructs a compressed value matrix $\hat{V}$ via least-squares fitting to the original attention-weighted values: $\hat{V} = \arg\min_{\hat{V}} \|AV - \hat{A}\hat{V}\|_F^2$, where $A$ is the full attention matrix and $\hat{A}$ is the compressed attention over retained tokens.
+
+At mild compression ($2\times$), the least-squares solution acts as a low-pass filter on the attention pattern. Tokens with negligible attention weight (noise) are absorbed into their nearest high-attention neighbors, while the semantically important attention structure is preserved. This is analogous to three well-studied regularization mechanisms:
+
+\begin{enumerate}
+    \item \textbf{Dropout}~\citep{srivastava2014dropout}: Randomly zeroing activations during training prevents co-adaptation. AM similarly removes low-contribution tokens, preventing the model from relying on noisy attention tails.
+    \item \textbf{Label smoothing}~\citep{szegedy2016}: Redistributing probability mass from the hard target to uniform. AM redistributes attention mass from many low-weight tokens to fewer high-weight tokens---a form of attention smoothing.
+    \item \textbf{Knowledge distillation}~\citep{hinton2015}: Fitting a smaller model to a larger model's soft targets. AM fits a smaller KV cache to the full cache's attention output---the least-squares objective is a distillation loss.
+\end{enumerate}
+
+\paragraph{The denoising--information loss crossover.}
+The non-monotonic quality curve reveals two competing effects:
+
+\begin{itemize}
+    \item \textbf{Denoising effect} $\delta_+(r)$: Removing low-attention noise improves prediction. Strongest at mild compression, saturates quickly as most noise is in the long tail of attention weights.
+    \item \textbf{Information loss} $\delta_-(r)$: Discarding tokens loses semantic content. Grows with compression ratio, accelerates as high-attention tokens are affected.
+\end{itemize}
+
+The observed quality at compression ratio $r$ is:
+\begin{equation}
+    Q(r) = Q_0 + \delta_+(r) - \delta_-(r)
+    \label{eq:quality-curve}
+\end{equation}
+
+The crossover point $r^*$ where $\delta_+'(r^*) = \delta_-'(r^*)$ defines the \emph{optimal compression ratio}---the point of maximum quality, not zero compression. From our data, $r^* \approx 2\times$ for QuALITY on Llama-3.1-8B.
+
+\paragraph{Cliff-plateau pattern: a phase transition.}
+The degradation curve exhibits a striking \emph{cliff-plateau} pattern, not gradual decay. The quality drop from $2\times$ to $5\times$ is catastrophic ($-13.3$ points), while the drop from $5\times$ to $10\times$ is negligible ($-1.1$ points). This indicates a sharp phase transition between $2\times$ and $5\times$ compression.
+
+We hypothesize this reflects the structure of the attention weight distribution. At $2\times$, only the long tail of near-zero attention tokens is removed---tokens that contribute noise rather than signal. Between $2\times$ and $5\times$, the compression crosses into semantically meaningful tokens (those with above-median attention weight), causing rapid quality collapse. Beyond $5\times$, the semantic content has already been lost; the remaining high-attention tokens form a stable structural skeleton that resists further degradation.
+
+This cliff-plateau pattern has practical implications: operating just below the cliff ($2$--$3\times$) captures the denoising benefit with minimal quality loss. Operating anywhere above the cliff ($5\times$+) yields similar---and poor---quality regardless of the exact ratio, suggesting that the cliff position, not the compression ratio itself, is the critical parameter to identify per model and task.
+
+\paragraph{Implications for evaluation methodology.}
+This finding challenges the standard evaluation paradigm for KV cache compression, which reports quality at a single compression ratio and declares success or failure relative to baseline. The existence of an optimal $r^* > 1$ implies:
+
+\begin{enumerate}
+    \item \textbf{Quality curves, not single points.} Compression methods should be evaluated across a range of ratios to characterize the full denoising--degradation tradeoff.
+    \item \textbf{No universal ``safe'' ratio.} The crossover point $r^*$ depends on the task, model, and compression method. It must be empirically determined per configuration.
+    \item \textbf{Compression $\neq$ degradation.} For methods with implicit regularization effects (AM, low-rank projection), mild compression can be \emph{recommended} even when memory is not constrained.
+\end{enumerate}

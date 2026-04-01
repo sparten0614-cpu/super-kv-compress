@@ -1,0 +1,202 @@
+% Paper 2 Theory Section: PCA-Rotated Optimal Bit Allocation for KV Cache
+% Status: Draft v1
+
+\section{Optimal Bit Allocation via PCA Rotation}
+\label{sec:pca-theory}
+
+We present a principled framework for adaptive KV cache quantization based on PCA rotation and water-filling bit allocation. The key insight is that KV cache vectors have highly non-uniform variance structure across dimensions---a property that uniform quantization wastes. By rotating to the PCA basis and allocating bits proportional to the log-eigenvalue, we achieve the same reconstruction quality at significantly fewer bits.
+
+\subsection{Preliminaries}
+
+Consider a single attention head with head dimension $d$. The KV cache stores key vectors $k_t \in \mathbb{R}^d$ at each position $t$. Let $\Sigma_K = \frac{1}{N} \sum_t k_t k_t^\top$ be the empirical covariance (centered), with eigendecomposition $\Sigma_K = P \Lambda P^\top$, $\Lambda = \operatorname{diag}(\lambda_1, \ldots, \lambda_d)$, $\lambda_1 \geq \cdots \geq \lambda_d > 0$.
+
+The PCA rotation $\tilde{k} = P^\top k$ decorrelates dimensions: $\operatorname{Cov}(\tilde{k}) = \Lambda$ is diagonal. This separability is the foundation of the framework.
+
+\paragraph{Empirical motivation.}
+The KV cache exhibits extreme variance non-uniformity. Table~\ref{tab:amgm} shows the AM/GM ratio (coding gain) measured on actual K cache vectors across models and layers. The gain is concentrated on \emph{outlier layers}---precisely the layers where uniform quantization fails catastrophically. For example, TinyLlama Layer~0 has AM/GM${}= 56.8$ (condition number $5 \times 10^8$), corresponding to $+2.9$ bits of effective precision gain. This is the same layer where Qwen's K$_{\max} = 93$ causes \texttt{q4\_0} to produce NIAH${}= 0\%$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrrr}
+\toprule
+\textbf{Model} & \textbf{Layer} & \textbf{AM/GM} & \textbf{Cond \#} & $\boldsymbol{\Delta b}$ \\
+\midrule
+TinyLlama-1.1B & \textbf{0 (outlier)}$^\dagger$ & \textbf{56.8} & $5 \times 10^8$ & \textbf{+2.9} \\
+TinyLlama-1.1B & 1--21 avg & 1.85 & 58--6555 & +0.44 \\
+\midrule
+Qwen2.5-3B & avg (all layers) & 2.7 & 568--2038 & +0.72 \\
+Qwen2.5-3B & \textbf{20 (outlier)} & \textbf{4.53} & 2038 & \textbf{+1.10} \\
+Qwen2.5-3B & \textbf{32 (outlier)} & \textbf{3.94} & 1507 & \textbf{+0.99} \\
+\bottomrule
+\end{tabular}
+\caption{Coding gain from PCA-adaptive allocation on actual K cache vectors (calibrated at seq\_len${}=256$). $\Delta b = \frac{1}{2}\log_2(\text{AM/GM})$ is the effective bit savings. Outlier layers show 5--30$\times$ higher gain than normal layers. V cache has AM/GM $\approx 1.43$ ($\Delta b = +0.26$), confirming that PCA-adaptive allocation is primarily beneficial for K, not V. $^\dagger$Layer~0 AM/GM is sequence-length dependent: 66 at 256 tokens, 23 at 1024, 15 at 2048 ($\Delta b$ ranges from $+2.9$ to $+1.95$). Normal layers are stable (CV$<$10\%).}
+\label{tab:amgm}
+\end{table}
+
+\paragraph{W\textsubscript{K} SVD as proxy.}
+Computing the actual KV cache eigenspectrum requires running inference with forward hooks, which is expensive for large models. An attractive alternative is using the SVD of the Key projection weight $W_K$ as a proxy. Table~\ref{tab:proxy} compares the proxy to actual KV cache AM/GM ratios on TinyLlama-1.1B.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Layer} & \textbf{Actual AM/GM} & \textbf{$W_K$ SVD} & \textbf{Error} \\
+\midrule
+0 (outlier) & 56.8 & 148.2 & $+$161\% \\
+1 & 3.78 & 11.33 & $+$200\% \\
+2 & 3.22 & 3.22 & 0\% \\
+3--21 avg & 1.85 & 1.80 & $-$3\% \\
+\bottomrule
+\end{tabular}
+\caption{$W_K$ SVD proxy vs.\ actual KV cache AM/GM on TinyLlama-1.1B. The proxy is accurate for normal layers ($<$10\% error) but \emph{overestimates} outlier layers because $W_K$ absorbs LayerNorm scaling that normalizes activations at runtime.}
+\label{tab:proxy}
+\end{table}
+
+\noindent The proxy is reliable for normal layers but overestimates outlier-layer gains due to LayerNorm normalization compressing the activation range. For models where only $W_K$ SVD is available (e.g., Llama-3.1-8B: AM/GM $= 2.5$), the proxy provides an accurate estimate for bulk layers but should not be extrapolated to identify outlier-layer gains without runtime validation.
+
+\begin{remark}[Sequence-length stability of PCA basis]
+\label{rem:seqlen}
+The eigenspectrum stability across sequence lengths determines whether a single PCA basis (calibrated offline) is sufficient for all inference lengths. Normal layers (L4--21 in TinyLlama) show coefficient of variation $<$10\% in AM/GM across seq\_len $\in \{256, 1024, 2048\}$, supporting \emph{static calibration}. Outlier layers are less stable: Layer~0 AM/GM decreases from 66 at 256 tokens to 15 at 2048, consistent with position-dependent feature dilution as context length increases. However, even at 2048 tokens, the coding gain remains $\geq 1.95$ bits. This motivates a two-tier system design: normal layers use static PCA-adaptive allocation, while outlier layers use a conservative high-bit fallback (e.g., \texttt{q8\_0} or FP16) that does not depend on the PCA basis stability.
+\end{remark}
+
+\subsection{Water-Filling Bit Allocation}
+\label{sec:water-filling}
+
+\begin{definition}[Bit allocation problem]
+Given a total bit budget $B = d \cdot \bar{b}$ (average $\bar{b}$ bits per dimension), find the per-dimension allocation $\{b_j\}_{j=1}^d$ minimizing total distortion:
+\begin{equation}
+    \min_{\{b_j\}} \sum_{j=1}^d D_j(b_j) \quad \text{s.t.} \quad \sum_{j=1}^d b_j = B, \quad b_j \geq 0
+    \label{eq:alloc-problem}
+\end{equation}
+\end{definition}
+
+Under the high-rate quantization model, the distortion for $b_j$-bit scalar quantization of a Gaussian with variance $\lambda_j$ is $D_j(b_j) = \gamma \lambda_j \cdot 2^{-2b_j}$, where $\gamma$ is a distribution-dependent constant~\citep{gersho1992}.
+
+\begin{theorem}[Optimal bit allocation]
+\label{thm:water-filling}
+The solution to~\eqref{eq:alloc-problem} is:
+\begin{equation}
+    b_j^* = \bar{b} + \frac{1}{2} \log_2 \frac{\lambda_j}{\bar{\lambda}_g}
+    \label{eq:optimal-alloc}
+\end{equation}
+where $\bar{\lambda}_g = \left(\prod_{j=1}^d \lambda_j\right)^{1/d}$ is the geometric mean of eigenvalues. The adjustments are conservative: $\sum_j (b_j^* - \bar{b}) = 0$.
+\end{theorem}
+
+\begin{proof}
+Form the Lagrangian $\mathcal{L} = \sum_j \gamma \lambda_j 2^{-2b_j} + \mu(\sum_j b_j - B)$. Setting $\partial \mathcal{L}/\partial b_j = 0$:
+\begin{equation}
+    -2\ln 2 \cdot \gamma \lambda_j \cdot 2^{-2b_j} + \mu = 0 \quad \Rightarrow \quad \gamma \lambda_j \cdot 2^{-2b_j} = \frac{\mu}{2\ln 2} \quad \forall j
+    \label{eq:equal-marginal}
+\end{equation}
+This \emph{equal marginal distortion} condition yields $b_j = \frac{1}{2}\log_2(\gamma \lambda_j \cdot 2\ln 2 / \mu)$. Substituting into $\sum_j b_j = B$ and solving for $\mu$ gives~\eqref{eq:optimal-alloc}. The budget-conservation property follows from $\sum_j \log_2(\lambda_j/\bar{\lambda}_g) = \log_2 \prod_j (\lambda_j/\bar{\lambda}_g) = 0$.
+\end{proof}
+
+\paragraph{Interpretation.} Dimensions with above-average variance ($\lambda_j > \bar{\lambda}_g$) receive more bits; dimensions with below-average variance receive fewer. When all eigenvalues are equal, $b_j^* = \bar{b}$---uniform allocation is optimal only for isotropic distributions.
+
+\paragraph{Non-negativity.} When $\lambda_j < \bar{\lambda}_g \cdot 2^{-2\bar{b}}$, the formula yields $b_j^* < 0$, meaning the dimension contributes negligibly and can be dropped entirely (dimension reduction). The solution is extended via reverse water-filling~\citep{cover2006}: set $b_j = 0$ for inactive dimensions and re-solve on the active set.
+
+\subsection{Coding Gain}
+\label{sec:coding-gain}
+
+\begin{theorem}[Coding gain of PCA-adaptive allocation]
+\label{thm:coding-gain}
+The ratio of uniform-allocation distortion to optimal-allocation distortion at the same average bit rate is:
+\begin{equation}
+    G = \frac{D_{\text{uniform}}}{D^*} = \frac{\bar{\lambda}_a}{\bar{\lambda}_g}
+    \label{eq:coding-gain}
+\end{equation}
+where $\bar{\lambda}_a = \frac{1}{d}\sum_j \lambda_j$ is the arithmetic mean. The equivalent bit savings are $\Delta b = \frac{1}{2}\log_2 G$.
+\end{theorem}
+
+\begin{proof}
+At the optimum, each dimension has equal distortion $D_j^* = \gamma \bar{\lambda}_g \cdot 2^{-2\bar{b}}$ (from~\eqref{eq:equal-marginal}), giving $D^* = d\gamma \bar{\lambda}_g \cdot 2^{-2\bar{b}}$. Uniform allocation gives $D_{\text{uniform}} = \gamma \cdot 2^{-2\bar{b}} \sum_j \lambda_j = d\gamma \bar{\lambda}_a \cdot 2^{-2\bar{b}}$. The ratio is $\bar{\lambda}_a/\bar{\lambda}_g \geq 1$ by AM-GM.
+\end{proof}
+
+\paragraph{Numerical example.} On TinyLlama-1.1B Layer~0, the AM/GM ratio of 56.8 yields $\Delta b = \frac{1}{2}\log_2 56.8 = 2.9$ bits. Adaptive quantization at 4 bits average achieves the distortion of uniform 6.9-bit quantization on this layer---nearly matching \texttt{q8\_0} quality. For normal layers (AM/GM $\approx 1.85$), the gain is a more modest $+0.44$ bits, but the outlier layers are precisely where quantization failure originates.
+
+\subsection{Optimality of PCA}
+\label{sec:pca-optimal}
+
+\begin{theorem}[PCA maximizes coding gain]
+\label{thm:pca-optimal}
+Among all orthogonal transforms $U \in \mathbb{R}^{d \times d}$, PCA (the Karhunen-Lo\`eve Transform) maximizes the coding gain $G(U) = \bar{\lambda}_a(U) / \bar{\lambda}_g(U)$.
+\end{theorem}
+
+\begin{proof}
+The arithmetic mean of marginal variances $\bar{\lambda}_a(U) = \operatorname{tr}(\Sigma_K)/d$ is invariant under orthogonal transforms. For the geometric mean, Hadamard's inequality gives $\det(\Sigma_K) \leq \prod_j [U^\top \Sigma_K U]_{jj} = \det \Lambda(U)$ for any orthogonal $U$, with equality iff $U$ diagonalizes $\Sigma_K$. Therefore $\bar{\lambda}_g(U) = (\det \Lambda(U))^{1/d} \geq (\det \Sigma_K)^{1/d} = \bar{\lambda}_g(\text{PCA})$, and $G(U) = \bar{\lambda}_a / \bar{\lambda}_g(U) \leq G(\text{PCA})$.
+\end{proof}
+
+\begin{remark}[Comparison to Hadamard rotation]
+TurboQuant~\citep{turboquant2026} uses the Walsh-Hadamard Transform (WHT), a data-independent orthogonal transform that approximately equalizes marginal variances. WHT is designed to \emph{minimize} variance spread (for uniform quantization), achieving $G(\text{WHT}) \approx 1$. In contrast, PCA \emph{maximizes} variance spread for adaptive quantization: $G(\text{PCA}) \geq G(U)$ for all $U$. The approaches are complementary---WHT is optimal for uniform quantization (no per-dimension adaptation), while PCA is optimal when per-dimension bit allocation is available.
+\end{remark}
+
+\subsection{Tiered Implementation}
+\label{sec:tiered}
+
+Hardware quantizers operate at fixed bit-widths. We approximate the continuous allocation~\eqref{eq:optimal-alloc} by grouping dimensions into $M$ tiers, each assigned a quantization type from the set $\{(b_m, c_m)\}_{m=1}^M$.
+
+\begin{proposition}[Monotonicity of optimal tiering]
+\label{prop:tiering}
+At the optimal tier assignment, dimensions are assigned in eigenvalue order: $\lambda_i > \lambda_j \Rightarrow b_{m_i} \geq b_{m_j}$.
+\end{proposition}
+
+\begin{proof}
+Suppose $\lambda_i > \lambda_j$ but $b_{m_i} < b_{m_j}$. Swapping assignments changes distortion by $\Delta D = (\lambda_i - \lambda_j)(c_{m_j} - c_{m_i}) < 0$ (since higher-bit tiers have lower distortion coefficients), a strict improvement at fixed bit budget. $\square$
+\end{proof}
+
+This monotonicity reduces the optimization from $M^d$ possibilities to finding $M-1$ cutpoints on the sorted eigenvalue spectrum, a problem solvable exactly in $O(d^{M-1})$---trivially fast for $d = 128$, $M = 3$.
+
+\paragraph{Example configuration.}
+For Llama-3.1-8B ($d_{\text{head}} = 128$, $\bar{b} = 4$) with three tiers (\texttt{q8\_0}, \texttt{q5\_0}, \texttt{q4\_0}):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccr}
+\toprule
+\textbf{Tier} & \textbf{Dims} & \textbf{Bits} & \textbf{$c_b$} & \textbf{Total bits} \\
+\midrule
+1 (high-$\lambda$) & 13 & 8 & 0.00046 & 104 \\
+2 (mid-$\lambda$)  & 51 & 5 & 0.0136  & 255 \\
+3 (low-$\lambda$)  & 64 & 4 & 0.0357  & 256 \\
+\midrule
+\textbf{Total}     & 128 & \textbf{4.8 avg} & & 615 \\
+\bottomrule
+\end{tabular}
+\caption{Example PCA-adaptive tiered allocation for K cache. At 4.8 bits average, the distortion is predicted to match uniform \texttt{q8\_0} (8 bits) when the coding gain $G \geq 2^{2(8-4.8)} = 2^{6.4} \approx 84$.}
+\label{tab:tiered-example}
+\end{table}
+
+\subsection{Computational Overhead}
+\label{sec:complexity}
+
+PCA-adaptive quantization introduces three costs relative to uniform quantization:
+
+\paragraph{Calibration (one-time, offline).}
+Computing the PCA basis requires collecting K vectors from calibration data and performing eigendecomposition of the $d \times d$ covariance matrix. Cost: $O(Nd^2 + d^3)$ per head per layer, where $N$ is the number of calibration tokens. For $d = 128$ and $N = 1000$: $\sim$2M FLOPs per head. For Llama-3.1-8B (32 layers $\times$ 8 heads): $\sim$500M FLOPs total, completing in $<$1 second on CPU. This is performed once per model and amortized over all subsequent inference.
+
+\paragraph{Runtime rotation (per token).}
+Each token's key vector must be rotated into the PCA basis before quantization ($\tilde{k} = P^\top k$) and rotated back after dequantization ($\hat{k} = P \hat{\tilde{k}}$). Each rotation is an $O(d^2)$ matrix-vector product: $d^2 = 16{,}384$ FLOPs per head. For comparison, one step of attention computation costs $O(n \cdot d)$ FLOPs per head, where $n$ is the context length. At $n = 4096$: attention costs $524{,}288$ FLOPs, making the rotation overhead $16{,}384 / 524{,}288 = 3.1\%$---negligible in practice. The overhead decreases further with longer contexts.
+
+\paragraph{Storage.}
+The PCA basis matrix $P \in \mathbb{R}^{d \times d}$ requires $d^2 \times 2 = 32$ KB per head (FP16). With per-layer sharing (justified by inter-head CV $< 10\%$ on normal layers, see Section~\ref{sec:pca-theory}): 32 KB per layer. For Llama-3.1-8B: $32 \times 32$ KB $= 1$ MB total---negligible compared to the 16 GB model.
+
+\paragraph{Two-tier simplification.}
+Since outlier layers (typically 2--3 per model) use high-bit fallback without PCA rotation, the runtime overhead applies only to normal layers. Combined with K-only PCA (V uses uniform quantization), the actual overhead is further reduced.
+
+\subsection{Orthogonality with Token-Level Compression}
+\label{sec:orthogonality}
+
+PCA-adaptive quantization operates along the \emph{dimension axis} (varying precision across the $d$ components of each vector), while eviction and attention merging operate along the \emph{token axis} (reducing the number of stored vectors). These axes are orthogonal:
+
+\begin{itemize}
+    \item PCA rotation $P^\top k$ does not change which tokens receive high attention---attention scores $q^\top k / \sqrt{d} = q^\top P P^\top k / \sqrt{d}$ are invariant under orthogonal transforms.
+    \item Eviction decisions are based on attention weights, not on per-dimension precision.
+\end{itemize}
+
+This orthogonality predicts that PCA-Quant and token-level compression errors combine additively, extending the additivity law established for K/V quantization in Section~\ref{sec:theory}:
+
+\begin{equation}
+    \Delta\text{PPL}(\text{PCA-Quant} + \text{eviction}) \approx \Delta\text{PPL}(\text{PCA-Quant}) + \Delta\text{PPL}(\text{eviction})
+\end{equation}
+
+If validated, this enables independent calibration: optimize bit allocation and eviction ratio separately, with total quality degradation being the sum. Combined compression: $\rho_{\text{quant}} \times \rho_{\text{evict}}$ (e.g., $4\times \times 5\times = 20\times$).

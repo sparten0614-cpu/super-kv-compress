@@ -1,0 +1,29 @@
+% Paper 2 Introduction
+\section{Introduction}
+\label{sec:intro}
+
+KV cache quantization---reducing the bit-width of stored key and value vectors---is the most practical approach to compressing the memory bottleneck in long-context LLM inference. Existing methods (KIVI, KVQuant, TurboQuant) apply \emph{uniform} quantization: every dimension of every layer receives the same number of bits. This is provably suboptimal when the variance across dimensions is non-uniform---a condition we show holds dramatically in practice.
+
+\paragraph{The outlier dimension problem.}
+Empirical analysis of KV cache eigenspectra reveals extreme variance non-uniformity, particularly in key vectors. On TinyLlama-1.1B, the K cache condition number reaches $1.6 \times 10^7$ (AM/GM ratio $= 56.8$ on the most extreme layer), while V cache has a modest condition number of $\sim$120. This means uniform 4-bit quantization wastes precision on low-variance dimensions while fatally under-representing high-variance ``outlier'' dimensions---the same dimensions that dominate attention computation. On GQA-heavy architectures (Qwen, GQA 7:1), this causes catastrophic failure: NIAH accuracy drops to 0\% at $\leq$5-bit K quantization~\citep{paper1}.
+
+\paragraph{This paper.}
+We present \textbf{PCA-Quant}, a principled framework for adaptive KV cache quantization that allocates bits optimally across dimensions. The key idea is simple: rotate key vectors into their PCA basis (where dimensions are decorrelated and ordered by variance), then apply water-filling bit allocation---giving more bits to high-variance dimensions and fewer to low-variance ones. At the same average bit rate, PCA-Quant achieves strictly lower distortion than any uniform scheme.
+
+We further investigate the combination of PCA-Quant with \emph{attention merging} (AM), a token-level compression method that reduces the number of KV cache entries via least-squares fitting. This combination exploits two orthogonal compression axes: bit reduction (PCA-Quant) and token reduction (AM). A surprising finding emerges: at mild compression ($2\times$), AM actually \emph{improves} downstream task accuracy---a ``compression as regularization'' effect not previously reported.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+    \item \textbf{Water-filling bit allocation for KV cache} (Section~\ref{sec:pca-theory}). We derive the optimal per-dimension bit allocation under a total budget constraint, proving that the coding gain equals the AM/GM ratio of the eigenspectrum---a classical result applied here for the first time to KV cache quantization. We prove PCA is the optimal rotation (maximizing coding gain over all orthogonal transforms, including the Hadamard transform used by TurboQuant).
+
+    \item \textbf{Empirical eigenspectrum characterization} (Section~\ref{sec:pca-theory}). We measure actual KV cache AM/GM ratios across models, layers, heads, and sequence lengths, finding:
+    \begin{itemize}
+        \item Coding gain is concentrated on outlier layers (+2.9 bits on Layer~0 vs.\ +0.44 bits average)
+        \item V cache is near-isotropic (AM/GM $\approx 1.4$): PCA is needed only for K
+        \item Normal-layer PCA bases are stable across sequence lengths (CV $<$ 10\%), enabling static calibration
+    \end{itemize}
+
+    \item \textbf{Compression as regularization} (Section~\ref{sec:compression-reg}). We show that attention merging at $2\times$ compression \emph{improves} QuALITY reading comprehension by +2.2\% over the uncompressed baseline, followed by a sharp cliff between $2\times$ and $5\times$. This cliff-plateau pattern challenges the assumption that compression monotonically degrades quality.
+
+    \item \textbf{Orthogonal compression axes} (Section~\ref{sec:orthogonality}). PCA-Quant (dimension axis) and AM (token axis) operate independently, enabling compositional compression: AM $2\times$ $\times$ PCA-Quant $4\times$ $= 8\times$ total, with quality predicted by summing individual degradations.
+\end{enumerate}

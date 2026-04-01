@@ -1,0 +1,44 @@
+% Paper 2 Related Work
+\section{Related Work}
+\label{sec:related}
+
+\subsection{KV Cache Quantization}
+
+\paragraph{Uniform quantization.}
+KIVI~\citep{kivi2024} applies per-channel 2-bit quantization to both Keys and Values.
+KVQuant~\citep{kvquant2024} adds outlier-aware per-channel quantization with sensitivity-based calibration.
+Both use uniform bit allocation across all dimensions within each entry, leaving significant coding gain on the table for spectra with high AM/GM ratios.
+
+\paragraph{Rotation-based quantization.}
+QuaRot~\citep{quarot2024} applies Hadamard rotation to model weights and activations to reduce outliers, enabling uniform quantization at lower bit-widths.
+TurboQuant~\citep{turboquant2026} extends this to KV cache, applying Walsh-Hadamard Transform (WHT) before Lloyd-Max scalar quantization.
+WHT is \emph{data-independent}: it approximately equalizes marginal variances, which is optimal for uniform quantization but leaves no room for adaptive allocation.
+In contrast, our PCA rotation is \emph{data-dependent} and maximally concentrates variance, enabling water-filling bit allocation with provably higher coding gain (Section~\ref{sec:pca-optimal}).
+
+\paragraph{Adaptive bit allocation.}
+KVTC~\citep{kvtc2026} (NVIDIA, ICLR 2026) applies PCA followed by adaptive allocation and DEFLATE entropy coding for KV cache \emph{storage} compression, achieving 20--40$\times$.
+Key differences from our work: (1) KVTC targets offline storage, not runtime inference memory; (2) KVTC uses variable-length entropy coding (incompatible with random-access KV cache reads during generation); (3) we provide the formal water-filling optimality proof and empirical eigenspectrum characterization missing from KVTC.
+PALU~\citep{palu2024} projects KV vectors to lower dimension via SVD, reducing $d_{\text{head}}$ by $2\times$.
+This is dimension \emph{reduction} (discarding components), while we perform dimension \emph{reallocation} (keeping all components but varying precision).
+
+\paragraph{Per-layer and per-head adaptation.}
+KVTuner~\citep{kvtuner2025} searches per-layer, per-head bit-width assignments via sensitivity analysis.
+Our work shows that the primary axis of adaptation should be \emph{per-dimension within each head} (water-filling), not just per-head or per-layer selection---the former captures spectral structure that the latter cannot.
+
+\subsection{Token-Level Compression}
+
+\paragraph{Eviction.}
+H\textsubscript{2}O~\citep{h2o2023} retains ``heavy hitter'' tokens by cumulative attention score.
+StreamingLLM~\citep{streamingllm2024} retains sink tokens plus a sliding window.
+SnapKV~\citep{snapkv2024} uses query-aware scoring.
+All face the causal limitation: eviction decisions at prefill time cannot anticipate future queries~\citep{paper1}.
+
+\paragraph{Attention merging.}
+CaM~\citep{cam2024} merges similar KV cache entries via attention-weighted least-squares fitting, preserving the attention output while reducing token count.
+We adopt this approach and discover a non-monotonic quality curve: at $2\times$ compression, task accuracy \emph{improves} (Section~\ref{sec:compression-reg}).
+To our knowledge, this ``compression as regularization'' effect has not been reported in the KV compression literature.
+
+\subsection{Transform Coding Theory}
+
+The optimality of the Karhunen-Lo\`eve Transform (KLT/PCA) for transform coding was established by~\citet{goyal2001}. The coding gain $G = \bar{\lambda}_a / \bar{\lambda}_g$ is a classical result from rate-distortion theory~\citep{cover2006,gersho1992}. Water-filling (reverse water-filling) bit allocation dates to Shannon's original work~\citep{shannon1959} and was formalized for Gaussian sources by~\citet{segall1976}.
+Our contribution is not the mathematical framework itself, but its application to KV cache quantization---demonstrating that the framework's assumptions (Gaussian-like marginals after rotation, decorrelation via PCA) hold empirically for transformer KV caches, and that the resulting coding gains are significant for the architectures where uniform quantization fails.
